@@ -1,0 +1,14 @@
+.chat-interface {
+  display: flex;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+
+@media (max-width: 768px) {
+  .chat-interface {
+    position: relative;
+  }
+}
+

@@ -1,0 +1,89 @@
+import React, { useEffect, useRef } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import './MessageList.css'
+
+const MessageList = ({ messages, onScrollToBottom }) => {
+  const listRef = useRef(null)
+  const prevSignatureRef = useRef({ id: null, length: 0 })
+  const isFirstRenderRef = useRef(true)
+
+  const scrollToBottom = (behavior = 'smooth') => {
+    const listEl = listRef.current
+    if (!listEl) return
+    const scrollBehavior = behavior
+    requestAnimationFrame(() => {
+      listEl.scrollTo({
+        top: listEl.scrollHeight,
+        behavior: scrollBehavior
+      })
+    })
+    if (typeof onScrollToBottom === 'function') {
+      onScrollToBottom()
+    }
+  }
+
+  useEffect(() => {
+    if (!messages || messages.length === 0) {
+      prevSignatureRef.current = { id: null, length: 0 }
+      isFirstRenderRef.current = true
+      return
+    }
+
+    const lastMessage = messages[messages.length - 1]
+    const signature = {
+      id: lastMessage?.clientId || lastMessage?.id || `idx-${messages.length - 1}`,
+      length: (lastMessage?.content || '').length,
+      isLoading: Boolean(lastMessage?.isLoading)
+    }
+    const prevSignature = prevSignatureRef.current
+    const hasNewMessage = signature.id !== prevSignature.id
+    const contentExtended = signature.id === prevSignature.id && signature.length > (prevSignature.length || 0)
+    const shouldScroll =
+      isFirstRenderRef.current ||
+      hasNewMessage ||
+      contentExtended ||
+      signature.isLoading
+
+    if (shouldScroll) {
+      const useSmoothScroll = !isFirstRenderRef.current && messages.length > 2
+      scrollToBottom(useSmoothScroll ? 'smooth' : 'auto')
+    }
+
+    prevSignatureRef.current = signature
+    isFirstRenderRef.current = false
+  }, [messages])
+
+  return (
+    <div className="message-list" ref={listRef}>
+      {messages.length === 0 ? (
+        <div className="empty-messages">
+          <p>No messages yet. Start the conversation!</p>
+        </div>
+      ) : (
+        <>
+          {messages.map((message, index) => (
+            <div key={message.clientId || message.id || index} className={`message ${message.role}`}>
+              <div className="message-content">
+                {message.isLoading ? (
+                  <div className="typing-indicator">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </div>
+                ) : (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {message.content}
+                  </ReactMarkdown>
+                )}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  )
+}
+
+export default MessageList
+

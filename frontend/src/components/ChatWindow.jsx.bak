@@ -1,0 +1,805 @@
+import React, { useState, useEffect, useRef } from 'react'
+import axios from 'axios'
+import MessageList from './MessageList'
+import MessageInput from './MessageInput'
+import './ChatWindow.css'
+
+const isDev = import.meta.env.DEV
+
+const extractChunkText = (content) => {
+  if (!content) return ''
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content.map(part => {
+      if (typeof part === 'string') return part
+      if (part?.text) return part.text
+      if (part?.content) return part.content
+      return ''
+    }).join('')
+  }
+  if (typeof content === 'object' && content.text) {
+    return content.text
+  }
+  return String(content)
+}
+
+const ChatWindow = ({
+  chatId,
+  userId,
+  onUpdateTitle,
+  onChatUpdate,
+  onCreateChat,
+  user,
+  onLogin,
+  sidebarOpen,
+  onToggleSidebar
+}) => {
+  const [messages, setMessages] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [connected, setConnected] = useState(false)
+  const [connectionNotice, setConnectionNotice] = useState('')
+  const [selectedModel, setSelectedModel] = useState('Auto')
+  const [modelSelectorOpen, setModelSelectorOpen] = useState(false)
+  const wsRef = useRef(null)
+  const activeChatRef = useRef(null)
+  const reconnectTimeoutRef = useRef(null)
+  const connectionTimeoutRef = useRef(null)
+  const requestIdRef = useRef(0)
+  const onUpdateTitleRef = useRef(onUpdateTitle)
+  const onChatUpdateRef = useRef(onChatUpdate)
+  const modelSelectorRef = useRef(null)
+  const streamingMessageIdRef = useRef(null) // Tracks latest stream or waiting ID
+  const streamIdToMessageIdRef = useRef({}) // Maps server stream IDs to local message IDs
+  const streamBuffersRef = useRef({}) // Tracks chunk ordering per stream
+  const pendingOutgoingMessagesRef = useRef([]) // Messages queued until socket ready
+  const intentionalCloseRef = useRef(false)
+  const pendingWaitingMessageIdsRef = useRef([]) // Queue of waiting placeholder IDs
+  const generateClientId = () => `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const normalizeMessages = (incoming = []) => incoming.map(message => {
+    const hasServerId = message.id !== undefined && message.id !== null
+    return {
+      ...message,
+      clientId: message.clientId || (hasServerId ? `server-${message.id}` : generateClientId()),
+      isLoading: Boolean(message.isLoading)
+    }
+  })
+
+  useEffect(() => {
+    onUpdateTitleRef.current = onUpdateTitle
+  }, [onUpdateTitle])
+
+  useEffect(() => {
+    onChatUpdateRef.current = onChatUpdate
+  }, [onChatUpdate])
+
+  // Close model selector when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (modelSelectorRef.current && !modelSelectorRef.current.contains(event.target)) {
+        setModelSelectorOpen(false)
+      }
+    }
+
+    if (modelSelectorOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside)
+      }
+    }
+  }, [modelSelectorOpen])
+
+  useEffect(() => {
+    activeChatRef.current = chatId ?? null
+
+    setMessages([])
+    setConnected(false)
+    setConnectionNotice('')
+    streamIdToMessageIdRef.current = {}
+    streamBuffersRef.current = {}
+    pendingOutgoingMessagesRef.current = []
+    pendingWaitingMessageIdsRef.current = []
+    streamingMessageIdRef.current = null
+
+    if (!chatId || !userId) {
+      return () => {
+        if (wsRef.current) {
+          wsRef.current.close()
+          wsRef.current = null
+        }
+      }
+    }
+
+    let isCurrent = true
+    const requestId = ++requestIdRef.current
+
+    const fetchMessages = async (options = {}) => {
+      const { showLoader = true } = options
+      if (showLoader) {
+        setLoading(true)
+      }
+      try {
+        const response = await axios.get(`/api/chats/${chatId}`, {
+          params: { user_id: userId }
+        })
+
+        if (!isCurrent || activeChatRef.current !== chatId || requestId !== requestIdRef.current) {
+          return
+        }
+
+        // Deduplicate and sort messages by creation time
+        const uniqueMessages = response.data.messages.reduce((acc, msg) => {
+          if (!acc.some(m => m.id === msg.id)) {
+            acc.push(msg)
+          }
+          return acc
+        }, [])
+        uniqueMessages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+        setMessages(normalizeMessages(uniqueMessages))
+
+        if (response.data.title === 'New Chat' && response.data.messages.length > 0) {
+          const firstUserMessage = response.data.messages.find(m => m.role === 'user')
+          if (firstUserMessage) {
+            const truncated = firstUserMessage.content.slice(0, 50)
+            onUpdateTitleRef.current?.(chatId, truncated.length === firstUserMessage.content.length ? truncated : `${truncated}...`)
+          }
+        }
+      } catch (err) {
+        if (isCurrent) {
+          console.error('Failed to load messages:', err)
+        }
+      } finally {
+        if (isCurrent && showLoader) {
+          setLoading(false)
+        }
+      }
+    }
+
+    const flushPendingMessages = () => {}
+
+    const openSocket = () => {
+      if (!isCurrent || activeChatRef.current !== chatId) return
+
+      // Use current host so Vite proxy forwards to backend
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const wsHost = window.location.host // Keep the full host:port so proxy works
+      const socket = new WebSocket(`${wsProtocol}//${wsHost}/ws/chat/${chatId}/${userId}`)
+      wsRef.current = socket
+      console.log('Opening WebSocket:', `${wsProtocol}//${wsHost}/ws/chat/${chatId}/${userId}`)
+
+      // Connection timeout - if not connected within 5 seconds, retry
+      connectionTimeoutRef.current = setTimeout(() => {
+        if (socket.readyState === WebSocket.CONNECTING) {
+          console.warn('WebSocket connection timeout, closing and retrying...')
+          socket.close()
+        }
+        connectionTimeoutRef.current = null
+      }, 5000)
+
+      socket.onopen = () => {
+        if (connectionTimeoutRef.current) {
+          clearTimeout(connectionTimeoutRef.current)
+          connectionTimeoutRef.current = null
+        }
+        if (!isCurrent || activeChatRef.current !== chatId) {
+          socket.close()
+          return
+        }
+        intentionalCloseRef.current = false
+        setConnected(true)
+        setConnectionNotice('')
+        flushPendingMessages()
+        console.log('WebSocket connected successfully')
+      }
+
+      socket.onmessage = (event) => {
+        if (!isCurrent || activeChatRef.current !== chatId) return
+
+        const data = JSON.parse(event.data)
+        console.log('[WS] Received:', data.type, 'isDev:', isDev)
+        if (isDev) {
+          console.log('[WS]', data)
+        }
+        
+        if (data.type === 'message') {
+          setMessages(prev => {
+            if (prev.some(m => m.id === data.id)) {
+              if (isDev) {
+                console.log('[WS message] Message already exists, skipping:', data.id)
+              }
+              return prev
+            }
+
+            if (data.role === 'assistant') {
+              const assistantText = extractChunkText(data.content)
+              const waitingMsg = prev.find(m => m.isLoading)
+              if (waitingMsg) {
+                const queueIndex = pendingWaitingMessageIdsRef.current.indexOf(waitingMsg.id)
+                if (queueIndex !== -1) {
+                  pendingWaitingMessageIdsRef.current.splice(queueIndex, 1)
+                }
+                streamingMessageIdRef.current = null
+                streamIdToMessageIdRef.current = {}
+                return prev.map(m => {
+                  if (m.id === waitingMsg.id) {
+                    return {
+                      ...m,
+                      id: data.id,
+                      role: data.role,
+                      clientId: m.clientId || waitingMsg.id,
+                      content: assistantText,
+                      created_at: data.created_at,
+                      isLoading: false
+                    }
+                  }
+                  return m
+                })
+              }
+              streamingMessageIdRef.current = null
+              streamIdToMessageIdRef.current = {}
+              return [
+                ...prev,
+                {
+                  id: data.id,
+                  clientId: `server-${data.id}`,
+                  role: data.role,
+                  content: assistantText,
+                  created_at: data.created_at,
+                  isLoading: false
+                }
+              ]
+            }
+
+            if (data.role === 'user') {
+              const tempUserMsg = prev.find(m => typeof m.id === 'string' && m.id.startsWith('temp-') && m.content === data.content)
+              if (tempUserMsg) {
+                return prev.map(m => {
+                  if (m.id === tempUserMsg.id) {
+                    return {
+                      ...m,
+                      id: data.id,
+                      clientId: m.clientId || `server-${data.id}`,
+                      created_at: data.created_at
+                    }
+                  }
+                  return m
+                })
+              }
+            }
+
+            return [
+              ...prev,
+              {
+                id: data.id,
+                clientId: `server-${data.id}`,
+                role: data.role,
+                content: data.content,
+                created_at: data.created_at,
+                isLoading: false
+              }
+            ]
+          })
+
+          if (data.role === 'user') {
+            onChatUpdateRef.current?.()
+          }
+        } else if (data.type === 'message_start') {
+          const streamId = data.stream_id || `stream-${Date.now()}`
+          streamingMessageIdRef.current = streamId
+          streamBuffersRef.current[streamId] = { chunks: [], text: '' }
+          if (isDev) {
+            console.log('[WS message_start]', 'streamId:', streamId, 'pending queue:', pendingWaitingMessageIdsRef.current)
+          }
+          setMessages(prev => {
+            let waitingMsg = null
+            if (pendingWaitingMessageIdsRef.current.length > 0) {
+              const candidateId = pendingWaitingMessageIdsRef.current[0]
+              waitingMsg = prev.find(m => m.id === candidateId)
+              if (waitingMsg) {
+                pendingWaitingMessageIdsRef.current.shift()
+              }
+            }
+
+            if (!waitingMsg) {
+              waitingMsg = prev.find(m => m.isLoading)
+            }
+
+            if (waitingMsg) {
+              streamIdToMessageIdRef.current[streamId] = waitingMsg.id
+              if (isDev) {
+                console.log('[WS message_start]', 'Binding stream to waiting message:', streamId, waitingMsg.id)
+              }
+              return prev.map(m => m.id === waitingMsg.id ? {
+                ...m,
+                isLoading: false,
+                role: 'assistant',
+                content: m.content || ''
+              } : m)
+            }
+
+            // No waiting placeholder found, create a fresh assistant bubble
+            const fallbackId = streamIdToMessageIdRef.current[streamId] || streamId
+            streamIdToMessageIdRef.current[streamId] = fallbackId
+            if (prev.some(m => m.id === fallbackId)) {
+              return prev
+            }
+            if (isDev) {
+              console.log('[WS message_start]', 'Creating fallback assistant message for stream:', streamId, 'with id:', fallbackId)
+            }
+            return [
+              ...prev,
+              {
+                id: fallbackId,
+                clientId: fallbackId,
+                role: 'assistant',
+                content: '',
+                created_at: new Date().toISOString()
+              }
+            ]
+          })
+        } else if (data.type === 'message_chunk') {
+          const chunkText = extractChunkText(data.content)
+          const streamId = data.stream_id || streamingMessageIdRef.current
+          if (!chunkText || !streamId) return
+          if (isDev) {
+            console.log('[WS chunk]', chunkText, 'streamId:', streamId, 'map:', streamIdToMessageIdRef.current)
+          }
+          const chunkIndex = typeof data.chunk_index === 'number' ? data.chunk_index : null
+          const targetId = streamIdToMessageIdRef.current[streamId] || streamId
+          streamIdToMessageIdRef.current[streamId] = targetId
+
+          const buffer = streamBuffersRef.current[streamId] || { chunks: [], text: '' }
+          if (chunkIndex !== null) {
+            buffer.chunks = buffer.chunks.filter(c => c.index !== chunkIndex)
+            buffer.chunks.push({ index: chunkIndex, text: chunkText })
+            buffer.chunks.sort((a, b) => a.index - b.index)
+            buffer.text = buffer.chunks.map(c => c.text).join('')
+          } else {
+            buffer.text = (buffer.text || '') + chunkText
+          }
+          streamBuffersRef.current[streamId] = buffer
+          const mergedText = buffer.text || chunkText
+
+          setMessages(prev => {
+            let found = false
+            const updated = prev.map(msg => {
+              if (msg.id === targetId) {
+                found = true
+                if (isDev) {
+                  console.log('[WS chunk] Updating message:', msg.id, 'old length:', msg.content?.length || 0, 'chunk length:', chunkText.length)
+                }
+                return {
+                  ...msg,
+                  role: 'assistant',
+                  isLoading: false,
+                  content: mergedText
+                }
+              }
+              return msg
+            })
+
+            if (!found) {
+              if (isDev) {
+                console.log('[WS chunk] Creating new assistant message for stream:', streamId, 'targetId:', targetId)
+              }
+              return [
+                ...prev,
+                {
+                  id: targetId,
+                  clientId: targetId,
+                  role: 'assistant',
+                  isLoading: false,
+                  content: mergedText,
+                  created_at: new Date().toISOString()
+                }
+              ]
+            }
+
+            return updated
+          })
+        } else if (data.type === 'message_complete') {
+          const finalText = extractChunkText(data.content)
+          const streamId = data.stream_id || streamingMessageIdRef.current
+          const targetId = streamId ? (streamIdToMessageIdRef.current[streamId] || streamId) : null
+          if (isDev) {
+            console.log('[WS message_complete]', 'streamId:', streamId, 'target:', targetId, 'final length:', finalText.length)
+          }
+          if (!targetId) {
+            streamingMessageIdRef.current = null
+            onChatUpdateRef.current?.()
+            return
+          }
+          setMessages(prev => {
+            let updatedFlag = false
+            // First check if the final ID already exists (to prevent duplicates)
+            if (prev.some(m => m.id === data.id)) {
+              if (isDev) {
+                console.log('[WS message_complete] Message with final ID already exists, skipping update')
+              }
+              return prev
+            }
+            
+            const updated = prev.map(msg => {
+              if (msg.id === targetId) {
+                updatedFlag = true
+                // Keep the content we've been building from chunks, just update ID and metadata
+                if (isDev) {
+                  console.log('[WS message_complete] Updating message ID from', targetId, 'to', data.id)
+                }
+                return {
+                  ...msg,
+                  id: data.id,
+                  clientId: msg.clientId || `server-${data.id}`,
+                  role: data.role,
+                  isLoading: false,
+                  created_at: data.created_at,
+                  content: finalText || msg.content || ''
+                }
+              }
+              return msg
+            })
+            if (!updatedFlag) {
+              if (isDev) {
+                console.log('[WS message_complete] Message not found, appending new one for stream:', streamId)
+              }
+              // Only append if message wasn't found (shouldn't happen normally)
+              return [
+                ...prev,
+                {
+                  id: data.id,
+                  clientId: `server-${data.id}`,
+                  role: data.role,
+                  content: finalText,
+                  created_at: data.created_at
+                }
+              ]
+            }
+            return updated
+          })
+          if (streamId) {
+            delete streamIdToMessageIdRef.current[streamId]
+            delete streamBuffersRef.current[streamId]
+          }
+          streamingMessageIdRef.current = null
+          onChatUpdateRef.current?.()
+          fetchMessages({ showLoader: false })
+        } else if (data.type === 'error') {
+          console.error('Server error:', data.message)
+          setConnectionNotice(data.message || 'An error occurred')
+          const streamId = data.stream_id
+          if (streamId && streamIdToMessageIdRef.current[streamId]) {
+            const targetId = streamIdToMessageIdRef.current[streamId]
+            setMessages(prev => prev.filter(m => m.id !== targetId))
+            delete streamIdToMessageIdRef.current[streamId]
+          } else {
+            setMessages(prev => prev.filter(m => !m.isLoading))
+          }
+          streamingMessageIdRef.current = null
+          pendingWaitingMessageIdsRef.current = []
+        }
+      }
+
+      socket.onerror = (error) => {
+        if (connectionTimeoutRef.current) {
+          clearTimeout(connectionTimeoutRef.current)
+          connectionTimeoutRef.current = null
+        }
+        console.error('WebSocket error:', error)
+        if (intentionalCloseRef.current) {
+          return
+        }
+        if (isCurrent && activeChatRef.current === chatId) {
+          setConnectionNotice('Connection error. Reconnecting…')
+          setConnected(false)
+        }
+      }
+
+      socket.onclose = (event) => {
+        if (connectionTimeoutRef.current) {
+          clearTimeout(connectionTimeoutRef.current)
+          connectionTimeoutRef.current = null
+        }
+        if (wsRef.current === socket) {
+          wsRef.current = null
+          if (isCurrent && activeChatRef.current === chatId) {
+            if (!intentionalCloseRef.current) {
+              setConnected(false)
+              if (event.code !== 1000) { // Not a normal closure
+                setConnectionNotice('Disconnected. Reconnecting…')
+              }
+            }
+          }
+        }
+        if (intentionalCloseRef.current) {
+          intentionalCloseRef.current = false
+        }
+        if (isCurrent && activeChatRef.current === chatId) {
+          reconnectTimeoutRef.current = setTimeout(() => {
+            reconnectTimeoutRef.current = null
+            if (isCurrent && activeChatRef.current === chatId) {
+            openSocket()
+            }
+          }, 1000) // Reduced from 1500ms to 1000ms for faster reconnection
+        }
+      }
+    }
+
+    fetchMessages()
+    openSocket()
+
+    return () => {
+      isCurrent = false
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+        reconnectTimeoutRef.current = null
+      }
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current)
+        connectionTimeoutRef.current = null
+      }
+      if (wsRef.current) {
+        // Gracefully close the WebSocket
+        if (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING) {
+          intentionalCloseRef.current = true
+          wsRef.current.close()
+        }
+        wsRef.current = null
+      }
+    }
+  }, [chatId, userId])
+
+  const sendMessage = async (content) => {
+    const trimmed = content.trim()
+    if (!trimmed) return
+
+    if (!chatId) {
+      console.warn('No active chat to send message')
+      return
+    }
+
+    // Optimistically add user message
+    const tempId = 'temp-' + Date.now()
+    const clientId = tempId
+    setMessages(prev => [
+      ...prev,
+      {
+        id: tempId,
+        clientId,
+        role: 'user',
+        content: trimmed,
+        created_at: new Date().toISOString()
+      }
+    ])
+
+    // Add temporary waiting message
+    const waitingId = 'waiting-' + Date.now()
+    streamingMessageIdRef.current = waitingId
+    pendingWaitingMessageIdsRef.current.push(waitingId)
+    setMessages(prev => [
+      ...prev,
+      {
+        id: waitingId,
+        clientId: waitingId,
+        role: 'assistant',
+        content: '',
+        isLoading: true, // New flag for loading state
+        created_at: new Date().toISOString()
+      }
+    ])
+
+    try {
+      const payload = {
+        type: 'message',
+        content: trimmed,
+        model: selectedModel
+      }
+      const socket = wsRef.current
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        pendingOutgoingMessagesRef.current.push(payload)
+        if (isDev) {
+          console.log('[WS queue]', payload)
+        }
+        setConnectionNotice('Connecting… message will send automatically')
+        return
+      }
+      if (isDev) {
+        console.log('[WS send]', payload)
+      }
+      socket.send(JSON.stringify(payload))
+    } catch (err) {
+      console.error('Failed to send message:', err)
+      setConnectionNotice('Unable to send message. Connection issue.')
+      // Remove optimistic messages on error
+      setMessages(prev => prev.filter(msg => msg.id !== tempId && msg.id !== waitingId))
+    }
+  }
+
+  const handleLogin = async (username) => {
+    if (!username || !username.trim()) return
+    
+    try {
+      const response = await axios.post('/api/auth/login', {
+        email: username.trim()
+      })
+      console.log('Login response:', response.data)
+      if (response.data && response.data.user_id) {
+        onLogin(response.data)
+      } else {
+        console.error('Invalid login response:', response.data)
+      }
+    } catch (err) {
+      console.error('Login failed:', err)
+    }
+  }
+
+  const models = ['Auto', 'GPT-5-Nano', 'GPT-5-Mini']
+
+  const renderModelSelector = () => (
+    <div className="model-selector-container" ref={modelSelectorRef}>
+      <button
+        className="model-selector-button"
+        onClick={() => setModelSelectorOpen(!modelSelectorOpen)}
+        title="Select model"
+      >
+        <span className="model-selector-label">{selectedModel}</span>
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={`model-selector-arrow ${modelSelectorOpen ? 'open' : ''}`}
+        >
+          <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
+      </button>
+      {modelSelectorOpen && (
+        <div className="model-selector-dropdown">
+          {models.map((model) => (
+            <button
+              key={model}
+              className={`model-option ${selectedModel === model ? 'selected' : ''}`}
+              onClick={() => {
+                if (isDev) {
+                  console.log('[Model selected]', model)
+                }
+                setSelectedModel(model)
+                setModelSelectorOpen(false)
+              }}
+            >
+              {model}
+              {selectedModel === model && (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+
+  // Show login if user not logged in
+  if (!user) {
+    return (
+      <div className="chat-window">
+        <div className="chat-header">
+          <button className="menu-button" onClick={onToggleSidebar} title={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}>
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="3" width="6" height="14" rx="1"/>
+              <rect x="11" y="3" width="6" height="14" rx="1"/>
+            </svg>
+          </button>
+          {renderModelSelector()}
+          <div className="chat-status">
+            <span className="status-indicator disconnected">● Please log in</span>
+          </div>
+        </div>
+        <div className="chat-body login-state">
+          <div className="prelogin-messages">
+            <span className="placeholder-label">Preview</span>
+            <div className="placeholder-message user" />
+            <div className="placeholder-message assistant" />
+            <div className="placeholder-message user short" />
+            <div className="placeholder-message assistant long" />
+          </div>
+          <div className="login-overlay">
+            <div className="login-overlay-card">
+          <h2>Welcome to Chat</h2>
+              <p>Sign in to continue your conversations</p>
+          <div className="login-input-wrapper">
+            <input
+              type="text"
+              placeholder="Enter username"
+              className="login-input-inline"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && e.target.value.trim()) {
+                  handleLogin(e.target.value)
+                }
+              }}
+              autoFocus
+            />
+            <button
+              className="login-button-inline"
+              onClick={(e) => {
+                const input = e.target.previousElementSibling
+                if (input && input.value.trim()) {
+                  handleLogin(input.value)
+                }
+              }}
+            >
+              Continue
+            </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // If no chatId but user is logged in, show empty state with input at bottom
+  if (!chatId && user) {
+    return (
+      <div className="chat-window">
+        <div className="chat-header">
+        <button className="menu-button" onClick={onToggleSidebar} title={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="3" width="6" height="14" rx="1"/>
+            <rect x="11" y="3" width="6" height="14" rx="1"/>
+          </svg>
+        </button>
+          {renderModelSelector()}
+          <div className="chat-status"></div>
+        </div>
+        <div className="chat-body">
+        <MessageList messages={[]} />
+        </div>
+        <MessageInput onSendMessage={sendMessage} disabled />
+      </div>
+    )
+  }
+
+  return (
+    <div className="chat-window">
+      <div className="chat-header">
+        <button className="menu-button" onClick={onToggleSidebar} title={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="3" width="6" height="14" rx="1"/>
+            <rect x="11" y="3" width="6" height="14" rx="1"/>
+          </svg>
+        </button>
+        {renderModelSelector()}
+        <div className="chat-status">
+          {connected ? (
+            <span className="status-indicator connected">● Connected</span>
+          ) : (
+            <span className="status-indicator disconnected">● Connecting...</span>
+          )}
+        </div>
+      </div>
+      
+      <div className="chat-body">
+      {connectionNotice && (
+        <div className="connection-notice">
+          {connectionNotice}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="loading-messages">Loading messages...</div>
+      ) : (
+        <MessageList messages={messages} />
+      )}
+      </div>
+      
+      <MessageInput onSendMessage={sendMessage} disabled={!connected || !chatId} />
+    </div>
+  )
+}
+
+export default ChatWindow
+

@@ -1,0 +1,21 @@
+fastapi
+uvicorn
+openai
+pydantic
+pydantic-settings
+requests
+
+# Trae agent dependencies - comprehensive list
+anthropic
+google-generativeai
+rich
+aiofiles
+gitpython
+tree-sitter
+tree-sitter-languages
+jsonpath-ng
+pyyaml
+textual
+mcp
+docker
+pexpect
