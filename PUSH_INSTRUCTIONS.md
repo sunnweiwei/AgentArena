@@ -79,3 +79,7 @@ git ls-files | grep -E 'key$|openaikey$|\.env$'
 - ✅ Scripts and utilities
 - ❌ **NOT committed**: `.env`, `key`, `openaikey` (properly excluded)
 
+
+
+
+

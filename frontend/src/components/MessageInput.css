@@ -1,1 +1,265 @@
+.message-input-container {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  padding: 20px;
+  padding-bottom: max(20px, env(safe-area-inset-bottom));
+  background: transparent;
+  border-top: none;
+  box-sizing: border-box;
+}
+
+.message-input-form {
+  max-width: 768px;
+  margin: 0 auto;
+  display: flex;
+  align-items: stretch;
+  background: var(--input-form-bg);
+  border: 1px solid var(--input-form-border);
+  border-radius: 26px;
+  padding: 12px 18px;
+  backdrop-filter: blur(5px) saturate(160%);
+  -webkit-backdrop-filter: blur(5px) saturate(160%);
+  transition: border-color 0.2s;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+  position: relative;
+}
+
+.message-input-form:focus-within {
+  border-color: var(--accent);
+}
+
+.message-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-family: inherit;
+  resize: none;
+  outline: none;
+  max-height: 240px;
+  overflow-y: auto;
+  line-height: 1.45;
+  margin: 0;
+  vertical-align: middle;
+  padding: 0 60px 0 12px;
+}
+
+.message-input::placeholder {
+  color: var(--text-secondary);
+}
+
+.message-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.voice-button {
+  position: absolute;
+  right: 52px;
+  bottom: 6px;
+  width: 30px;
+  height: 30px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.2s, opacity 0.2s, color 0.2s;
+  z-index: 1;
+  border-radius: 6px;
+}
+
+.voice-button.requesting {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.voice-button:not(.recording):not(:disabled):hover {
+  background: var(--bg-tertiary);
+  opacity: 0.8;
+}
+
+.voice-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-left-color: var(--accent);
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin 0.8s linear infinite;
+}
+
+.voice-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.voice-button.recording {
+  background: #000;
+  color: #ffffff;
+  border: none;
+  box-shadow: none;
+  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+}
+
+.voice-button.recording:hover:not(:disabled) {
+  background: #000;
+}
+
+.voice-button.transcribing {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.voice-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.voice-button svg.spinning {
+  animation: spin 1s linear infinite;
+}
+
+.voice-button.disabled {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+  cursor: not-allowed;
+}
+
+.voice-warning {
+  margin-top: 8px;
+  text-align: center;
+  font-size: 13px;
+  color: #f97316;
+  background: rgba(249, 115, 22, 0.1);
+  border-radius: 12px;
+  padding: 8px 12px;
+  line-height: 1.4;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
+  }
+  50% {
+    box-shadow: 0 4px 20px rgba(239, 68, 68, 0.7);
+  }
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.voice-stop-indicator {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.voice-stop-indicator-inner {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: #ffffff;
+  box-shadow: none;
+  transition: transform 0.08s ease-out, opacity 0.08s ease-out;
+}
+
+.send-button {
+  position: absolute;
+  right: 10px;
+  bottom: 6px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: #0f1012;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: opacity 0.2s, background-color 0.2s;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+}
+
+.send-button:hover:not(:disabled) {
+  opacity: 0.9;
+  background: #1a1b1f;
+}
+
+.send-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.send-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+@media (max-width: 768px) {
+  .message-input-container {
+    padding: 16px;
+    bottom: 8px;
+  }
+
+  .message-input-form {
+    padding: 14px 18px;
+    border-radius: 28px;
+  }
+
+  .message-input {
+    font-size: 15px;
+    padding-right: 58px;
+    padding-left: 10px;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  .voice-button {
+    right: 54px;
+    bottom: 8px;
+    width: 32px;
+    height: 32px;
+  }
+
+  .voice-button.recording {
+    width: 32px;
+    height: 32px;
+  }
+
+  .voice-button svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .message-input::placeholder {
+    font-size: 14px;
+  }
+
+  .send-button {
+    right: 10px;
+    bottom: 8px;
+    width: 32px;
+    height: 32px;
+  }
+}
 
