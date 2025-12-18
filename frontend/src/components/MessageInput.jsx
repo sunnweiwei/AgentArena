@@ -3,7 +3,7 @@ import axios from 'axios'
 import './MessageInput.css'
 
 const SECURE_URL = 'https://sf.lti.cs.cmu.edu:3000'
-const MessageInput = ({ onSendMessage, disabled }) => {
+const MessageInput = ({ onSendMessage, onStopGeneration, disabled, isStreaming }) => {
   const [message, setMessage] = useState('')
   const [isRecording, setIsRecording] = useState(false)
   const [isRequestingAccess, setIsRequestingAccess] = useState(false)
@@ -425,17 +425,31 @@ const MessageInput = ({ onSendMessage, disabled }) => {
             </svg>
           )}
         </button>
-        <button
-          type="submit"
-          className="send-button"
-          disabled={!message.trim() || disabled || isTranscribing}
-          aria-label="Send message"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="12" y1="19" x2="12" y2="5" />
-            <polyline points="5 12 12 5 19 12" />
-          </svg>
-        </button>
+        {isStreaming ? (
+          <button
+            type="button"
+            className="send-button stop-button"
+            onClick={onStopGeneration}
+            aria-label="Stop generation"
+            title="Stop generation"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="5" y="5" width="14" height="14" rx="2" />
+            </svg>
+          </button>
+        ) : (
+          <button
+            type="submit"
+            className="send-button"
+            disabled={!message.trim() || disabled || isTranscribing}
+            aria-label="Send message"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="19" x2="12" y2="5" />
+              <polyline points="5 12 12 5 19 12" />
+            </svg>
+          </button>
+        )}
       </form>
       {!isSecureContextState && (
         <div className="voice-warning">

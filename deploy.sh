@@ -7,7 +7,7 @@ if [ -f .env ]; then
     source load_env.sh
     PASSWORD=$SSH_PASSWORD
 elif [ -f key ]; then
-    PASSWORD=$(cat key)
+PASSWORD=$(cat key)
 else
     echo "Error: .env file not found and 'key' file doesn't exist"
     exit 1

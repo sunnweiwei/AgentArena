@@ -1,13 +1,15 @@
 .message-list {
   flex: 1;
-  overflow-y: auto;
-  padding: 20px 0 120px;
-  padding-bottom: calc(120px + env(safe-area-inset-bottom));
-  margin-top: calc(var(--chat-header-height) * -1);
-  padding-top: var(--chat-header-height);
   display: flex;
   flex-direction: column;
   gap: 0;
+  padding: 20px 0 120px;
+  padding-top: calc(var(--chat-header-height) + 20px);
+  padding-bottom: calc(120px + env(safe-area-inset-bottom));
+  overflow-y: auto;
+  min-height: 0;
+  /* Put the scroll viewport behind the sticky header (for blur-through) */
+  margin-top: calc(var(--chat-header-height) * -1);
 }
 
 .message {
@@ -163,14 +165,69 @@
   font-size: 16px;
 }
 
+/* Skeleton loading indicator - looks like content preview */
 .typing-indicator {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  flex-direction: column;
+  gap: 8px;
   padding: 4px 0;
 }
 
-.typing-indicator span {
+.skeleton-line {
+  height: 16px;
+  background: linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.06) 0%,
+    rgba(0, 0, 0, 0.12) 50%,
+    rgba(0, 0, 0, 0.06) 100%
+  );
+  background-size: 200% 100%;
+  border-radius: 4px;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+[data-theme="dark"] .skeleton-line {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.06) 0%,
+    rgba(255, 255, 255, 0.12) 50%,
+    rgba(255, 255, 255, 0.06) 100%
+  );
+  background-size: 200% 100%;
+}
+
+.skeleton-line:nth-child(1) {
+  width: 90%;
+}
+
+.skeleton-line:nth-child(2) {
+  width: 90%;
+  animation-delay: 0.1s;
+}
+
+.skeleton-line:nth-child(3) {
+  width: 75%;
+  animation-delay: 0.2s;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Inline loading indicator for streaming pauses */
+.inline-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+.inline-loading span {
   width: 6px;
   height: 6px;
   background: var(--text-secondary);
@@ -178,11 +235,11 @@
   animation: bounce 1.4s infinite ease-in-out both;
 }
 
-.typing-indicator span:nth-child(1) {
+.inline-loading span:nth-child(1) {
   animation-delay: -0.32s;
 }
 
-.typing-indicator span:nth-child(2) {
+.inline-loading span:nth-child(2) {
   animation-delay: -0.16s;
 }
 
@@ -196,8 +253,10 @@
 
 @media (max-width: 768px) {
   .message-list {
-    margin-top: calc(var(--chat-header-height) * -1);
-    padding: var(--chat-header-height) 0 100px;
+    flex: 1;
+    overflow-y: auto;
+    padding-bottom: 100px;
+    padding-top: calc(var(--chat-header-height) + 20px);
   }
 
   .message {

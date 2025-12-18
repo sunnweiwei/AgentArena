@@ -1,6 +1,8 @@
 import React, { useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import rehypeRaw from 'rehype-raw'
+import { AgentContent } from './AgentBlock'
 import './MessageList.css'
 
 const MessageList = ({ messages, onScrollToBottom }) => {
@@ -62,23 +64,52 @@ const MessageList = ({ messages, onScrollToBottom }) => {
         </div>
       ) : (
         <>
-          {messages.map((message, index) => (
-            <div key={message.clientId || message.id || index} className={`message ${message.role}`}>
-              <div className="message-content">
-                {message.isLoading ? (
-                  <div className="typing-indicator">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                  </div>
-                ) : (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {message.content}
-                  </ReactMarkdown>
-                )}
+          {messages.map((message, index) => {
+            // Check if message contains agent markup (think/tool tags)
+            const hasAgentMarkup = message.content && 
+              (message.content.includes('<|think|>') || message.content.includes('<|tool|>'))
+            
+            return (
+              <div key={message.clientId || message.id || index} className={`message ${message.role}`}>
+                <div className="message-content">
+                  {message.isLoading ? (
+                    <div className="typing-indicator">
+                      <div className="skeleton-line"></div>
+                      <div className="skeleton-line"></div>
+                      <div className="skeleton-line"></div>
+                    </div>
+                  ) : hasAgentMarkup ? (
+                    <AgentContent content={message.content} showInlineLoading={message.isStreaming} />
+                  ) : (
+                    <>
+                      <ReactMarkdown 
+                        remarkPlugins={[remarkGfm]}
+                        rehypePlugins={[rehypeRaw]}
+                        components={{
+                          img: ({node, ...props}) => (
+                            <img 
+                              {...props} 
+                              style={{maxWidth: '100%', height: 'auto', borderRadius: '8px', marginTop: '8px', marginBottom: '8px'}}
+                              loading="lazy"
+                            />
+                          )
+                        }}
+                      >
+                        {message.content}
+                      </ReactMarkdown>
+                      {message.isStreaming && (
+                        <span className="inline-loading">
+                          <span></span>
+                          <span></span>
+                          <span></span>
+                        </span>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </>
       )}
     </div>

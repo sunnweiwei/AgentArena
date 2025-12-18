@@ -168,6 +168,76 @@ curl -s -o /dev/null -w "%{http_code}" http://sf.lti.cs.cmu.edu:3000/
 
 ---
 
+## Search Agent Service
+
+### Start Search Agent Server
+
+```bash
+./start_search_agent.sh
+```
+
+Or manually:
+
+```bash
+cd /Users/sunweiwei/NLP/base_project
+source load_env.sh
+export PASSWORD=$SSH_PASSWORD
+expect <<'EOF'
+spawn ssh -o StrictHostKeyChecking=no weiweis@sf.lti.cs.cmu.edu "cd /usr1/data/weiweis/chat_server/agent_service/search && export PYTHONPATH=/usr1/data/weiweis/chat_server:\$PYTHONPATH && nohup /home/weiweis/.local/bin/uvicorn server:app --host 0.0.0.0 --port 8001 > /usr1/data/weiweis/chat_server/logs/search_agent.log 2>&1 &"
+expect "password:"
+send "$env(PASSWORD)\r"
+expect eof
+EOF
+```
+
+### Check Search Agent Status
+
+```bash
+# Health check
+curl -s http://sf.lti.cs.cmu.edu:8001/health | jq .
+
+# Check logs
+cd /Users/sunweiwei/NLP/base_project
+source load_env.sh
+export PASSWORD=$SSH_PASSWORD
+expect <<'EOF'
+spawn ssh -o StrictHostKeyChecking=no weiweis@sf.lti.cs.cmu.edu "tail -50 /usr1/data/weiweis/chat_server/logs/search_agent.log"
+expect "password:"
+send "$env(PASSWORD)\r"
+expect eof
+EOF
+```
+
+### Stop Search Agent
+
+```bash
+cd /Users/sunweiwei/NLP/base_project
+source load_env.sh
+export PASSWORD=$SSH_PASSWORD
+expect <<'EOF'
+spawn ssh -o StrictHostKeyChecking=no weiweis@sf.lti.cs.cmu.edu "pkill -f 'uvicorn.*8001'"
+expect "password:"
+send "$env(PASSWORD)\r"
+expect eof
+EOF
+```
+
+### Sync Search Agent Code
+
+```bash
+cd /Users/sunweiwei/NLP/base_project
+source load_env.sh
+export PASSWORD=$SSH_PASSWORD
+expect <<'EOF'
+spawn scp -r agent_service/search weiweis@sf.lti.cs.cmu.edu:/usr1/data/weiweis/chat_server/agent_service/
+expect "password:"
+send "$env(PASSWORD)\r"
+expect eof
+EOF
+```
+
+---
+
 ## Quick Reference
 
 **Server Details:**
@@ -175,9 +245,11 @@ curl -s -o /dev/null -w "%{http_code}" http://sf.lti.cs.cmu.edu:3000/
 - User: `weiweis`
 - Backend Path: `/usr1/data/weiweis/chat_server/backend/`
 - Frontend Path: `/usr1/data/weiweis/chat_server/frontend/`
+- Search Agent Path: `/usr1/data/weiweis/chat_server/agent_service/search/`
 - Logs Path: `/usr1/data/weiweis/chat_server/logs/`
 - Backend Port: `8000`
 - Frontend Port: `3000`
+- Search Agent Port: `8001`
 
 **Common File Paths:**
 - Backend: `backend/main.py`

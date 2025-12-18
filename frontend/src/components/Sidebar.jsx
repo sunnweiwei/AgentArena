@@ -78,17 +78,17 @@ const Sidebar = ({
             chats.map(chat => {
               const isPending = Boolean(pendingChats?.[chat.id])
               return (
-                <div
-                  key={chat.id}
+              <div
+                key={chat.id}
                   className={`chat-item ${chat.id === currentChatId ? 'active' : ''} ${animatingChatId === chat.id ? 'moving-to-top' : ''} ${isPending ? 'pending' : ''}`}
-                  onClick={() => {
-                    if (isLocked) return
-                    onSelectChat(chat.id)
-                  }}
-                >
-                  <div className="chat-item-content">
+                onClick={() => {
+                  if (isLocked) return
+                  onSelectChat(chat.id)
+                }}
+              >
+                <div className="chat-item-content">
                     <div className="chat-title-row">
-                      <div className="chat-title">{chat.title}</div>
+                  <div className="chat-title">{chat.title}</div>
                       {isPending && (
                         <div className="chat-pending-indicator" title="Assistant response in progress">
                           <span></span>
@@ -112,12 +112,12 @@ const Sidebar = ({
                 onClick={() => setUserMenuOpen(prev => !prev)}
                 title="Open user menu"
               >
-                <div className="user-avatar">
-                  {user.email ? user.email.charAt(0).toUpperCase() : 'U'}
-                </div>
-                <div className="user-info">
-                  <div className="user-email">{user.email}</div>
-                </div>
+              <div className="user-avatar">
+                {user.email ? user.email.charAt(0).toUpperCase() : 'U'}
+              </div>
+              <div className="user-info">
+                <div className="user-email">{user.email}</div>
+              </div>
               </button>
               <button className="theme-toggle-button" onClick={toggleTheme} title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
                 {theme === 'dark' ? (

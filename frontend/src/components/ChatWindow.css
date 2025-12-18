@@ -12,16 +12,183 @@
 .chat-body {
   flex: 1;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   position: relative;
-  overflow-y: visible;
-  overflow-x: hidden;
-  margin-top: calc(var(--chat-header-height) * -1);
-  padding-top: var(--chat-header-height);
+  /* Allow message list to extend under the sticky header (for blur-through) */
+  overflow: visible;
+  min-height: 0;
+  gap: 0;
+}
+
+.chat-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  /* Don't clip the negative top margin used by the scroll area */
+  overflow: visible;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  /* No width transition: dragging should feel immediate */
+}
+
+.chat-body.with-canvas .chat-content {
+  flex: 0 0 auto;
+  max-width: none;
+}
+
+.resize-handle {
+  width: 8px;
+  cursor: col-resize;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+  opacity: 0;
+  animation: fadeIn 0.3s ease 0.2s forwards;
+}
+
+@keyframes fadeIn {
+  to {
+    opacity: 1;
+  }
+}
+
+.resize-handle:hover .resize-handle-line,
+.resize-handle:active .resize-handle-line {
+  background: var(--accent);
+  opacity: 1;
+}
+
+.resize-handle-line {
+  width: 2px;
+  height: 100%;
+  background: var(--border-color);
+  opacity: 0.3;
+  transition: all 0.2s;
+  border-radius: 1px;
+}
+
+.canvas-panel {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateX(20px);
+  animation: slideInCanvas 0.3s ease forwards;
+}
+
+@keyframes slideInCanvas {
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.canvas-container {
+  flex: 1;
+  background: var(--bg-tertiary);
+  border-radius: 16px;
+  border: none;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .canvas-container {
+  background: #f1f2f5;
+}
+
+@media (max-width: 1024px) {
+  .resize-handle {
+    display: none;
+  }
+  
+  .canvas-panel {
+    position: fixed;
+    top: var(--chat-header-height);
+    bottom: 120px; /* keep above input bar */
+    left: 0;
+    right: 0;
+    z-index: 100;
+    padding: 0;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    background: transparent;
+    pointer-events: none;
+    opacity: 0;
+    animation: fadeInCanvas 0.3s ease forwards;
+  }
+  
+  @keyframes fadeInCanvas {
+    to {
+      opacity: 1;
+    }
+  }
+  
+  .chat-body.sidebar-open .canvas-panel {
+    /* Float only over the message area (not the sidebar) */
+    left: 260px;
+  }
+  
+  .chat-body.with-canvas .chat-content {
+    width: 100% !important;
+  }
+  
+  .canvas-container {
+    /* Match message width exactly: same as .message-content */
+    width: 100%;
+    max-width: 980px;
+    margin: 20px 20px;
+    height: calc(100% - 40px);
+    background: var(--input-form-bg);
+    border: 1px solid var(--input-form-border);
+    backdrop-filter: blur(10px) saturate(180%);
+    -webkit-backdrop-filter: blur(10px) saturate(180%);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    pointer-events: all;
+    /* Ensure no transform is applied that would break backdrop-filter */
+    transform: translateZ(0);
+    will-change: auto;
+  }
+  
+  [data-theme="light"] .canvas-container {
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+  }
+  
+  .chat-body.with-canvas .chat-content {
+    max-width: 100%;
+  }
+  
+  /* Hide overlay on mobile - no darkening effect */
+  .canvas-overlay {
+    display: none;
+  }
+}
+
+.message-input-wrapper {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  z-index: 10;
+  /* No width transition: dragging should feel immediate */
+}
+
+@media (max-width: 1024px) {
+  .message-input-wrapper.with-canvas {
+    width: 100% !important;
+  }
 }
 
 .chat-body.login-state {
   padding: var(--chat-header-height) 16px 24px;
+  flex-direction: column;
 }
 
 .chat-window.empty {
@@ -46,6 +213,36 @@
   padding: 40px 20px;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.canvas-toggle-button {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.canvas-toggle-button:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.canvas-toggle-button.active {
+  background: var(--bg-tertiary);
+  color: var(--accent);
+}
+
 .chat-header {
   position: sticky;
   top: 0;
@@ -54,6 +251,7 @@
   border-bottom: 1px solid var(--header-glass-border);
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
   background: var(--header-glass-bg);
   backdrop-filter: blur(5px) saturate(160%);
@@ -61,6 +259,14 @@
   height: var(--chat-header-height);
   box-sizing: border-box;
   width: 100%;
+}
+
+.chat-header .menu-button {
+  flex-shrink: 0;
+}
+
+.chat-header .model-selector-container {
+  flex-shrink: 0;
 }
 
 .menu-button {

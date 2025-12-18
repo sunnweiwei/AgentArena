@@ -12,6 +12,8 @@ import os
 import time
 import tempfile
 from openai import OpenAI
+import aiohttp
+import json
 
 # Database setup with connection pooling
 SQLALCHEMY_DATABASE_URL = "sqlite:///./chat_data.db"
@@ -87,9 +89,15 @@ TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "gpt-4o-transcribe")
 
 # Model mapping
 MODEL_MAP = {
-    "Auto": "gpt-5-nano",  # Default to GPT-5-Nano unless overridden
+    "Auto": "search_agent",  # Default to Search Agent
     "GPT-5-Nano": "gpt-5-nano",
-    "GPT-5-Mini": "gpt-5-mini"
+    "GPT-5-Mini": "gpt-5-mini",
+    "Search Agent": "search_agent"
+}
+
+# External API configuration for models
+EXTERNAL_MODEL_APIS = {
+    "search_agent": os.getenv("SEARCH_AGENT_URL", "http://localhost:8001")
 }
 
 
@@ -532,6 +540,8 @@ async def health_check():
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
     active_tasks = set()
+    active_streams = {}  # stream_id -> task mapping for cancellation
+    cancelled_streams = set()  # Track cancelled stream_ids
     try:
         try:
             resolved_user_id = int(user_id)
@@ -563,15 +573,55 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     if not content:
                         continue
 
+                    # Generate stream_id upfront for tracking
+                    stream_id = f"stream-{chat_id}-{int(asyncio.get_event_loop().time() * 1000)}"
+                    
                     task = asyncio.create_task(handle_chat_message(
                         websocket=websocket,
                         user_id=resolved_user_id,
                         chat_id=chat_id,
                         content=content,
-                        model=model
+                        model=model,
+                        stream_id=stream_id,
+                        cancelled_streams=cancelled_streams
                     ))
                     active_tasks.add(task)
-                    task.add_done_callback(active_tasks.discard)
+                    active_streams[stream_id] = task
+                    
+                    def cleanup_task(t, sid=stream_id):
+                        active_tasks.discard(t)
+                        active_streams.pop(sid, None)
+                    
+                    task.add_done_callback(cleanup_task)
+
+                elif msg_type == "stop":
+                    # Handle stop generation request
+                    stream_id_to_stop = data.get("stream_id")
+                    chat_id_to_stop = data.get("chat_id")
+                    
+                    print(f"[WS] Stop request received. stream_id={stream_id_to_stop}, chat_id={chat_id_to_stop}")
+                    
+                    # Add to cancelled set
+                    if stream_id_to_stop:
+                        cancelled_streams.add(stream_id_to_stop)
+                    
+                    # Find and cancel the task
+                    task_to_cancel = None
+                    if stream_id_to_stop and stream_id_to_stop in active_streams:
+                        task_to_cancel = active_streams.get(stream_id_to_stop)
+                    elif chat_id_to_stop:
+                        # Try to find by chat_id prefix
+                        for sid, task in list(active_streams.items()):
+                            if sid.startswith(f"stream-{chat_id_to_stop}-"):
+                                task_to_cancel = task
+                                cancelled_streams.add(sid)
+                                break
+                    
+                    if task_to_cancel and not task_to_cancel.done():
+                        print(f"[WS] Cancelling task for stream")
+                        task_to_cancel.cancel()
+                    else:
+                        print(f"[WS] No active task found to cancel")
 
                 elif msg_type == "ping":
                     try:
@@ -601,8 +651,243 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             pass
 
 
-async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, content: str, model: str):
+async def call_external_model_api(api_url: str, messages_history: list, websocket: WebSocket, chat_id: str, user_id: int, stream_id: str, cancelled_streams: set = None):
+    """
+    Generic function to call any external model API with OpenAI-compatible streaming.
+    Handles streaming response from external API servers.
+    
+    Args:
+        api_url: Base URL of the external API server
+        messages_history: Conversation history
+        websocket: WebSocket connection to client
+        chat_id: Chat identifier
+        user_id: User identifier
+        stream_id: Stream identifier
+        cancelled_streams: Set of cancelled stream IDs
+    """
+    full_response = ""
+    chunk_index = 0
+    cancelled_streams = cancelled_streams or set()
+    was_cancelled = False
+    
+    try:
+        # Prepare request (OpenAI-compatible format)
+        request_payload = {
+            "messages": messages_history,
+            "stream": True
+        }
+        
+        # Call external API with streaming
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{api_url}/v1/chat/completions",
+                json=request_payload,
+                timeout=aiohttp.ClientTimeout(total=300)  # 5 minute timeout
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise RuntimeError(f"External API error: {response.status} - {error_text}")
+                
+                # Process streaming response (SSE format) - read line by line
+                buffer = b""
+                async for chunk in response.content.iter_any():
+                    # Check for cancellation
+                    if stream_id in cancelled_streams:
+                        print(f"[External API] Stream {stream_id} cancelled by user")
+                        was_cancelled = True
+                        break
+                    
+                    buffer += chunk
+                    
+                    # Process complete lines
+                    while b'\n' in buffer:
+                        line_bytes, buffer = buffer.split(b'\n', 1)
+                        line = line_bytes.decode('utf-8').strip()
+                        
+                        if not line or line.startswith(':'):
+                            continue
+                        
+                        if line.startswith('data: '):
+                            data_str = line[6:]  # Remove 'data: ' prefix
+                            
+                            if data_str == '[DONE]':
+                                break
+                            
+                            try:
+                                chunk_data = json.loads(data_str)
+                                
+                                # Check for errors
+                                if 'error' in chunk_data:
+                                    raise RuntimeError(f"API error: {chunk_data['error'].get('message', 'Unknown error')}")
+                                
+                                # Extract content from OpenAI-like format
+                                if 'choices' in chunk_data and len(chunk_data['choices']) > 0:
+                                    delta = chunk_data['choices'][0].get('delta', {})
+                                    content = delta.get('content', '')
+                                    
+                                    if content:
+                                        print(f"[External API] Chunk {chunk_index + 1}: {len(content)} chars")
+                                        full_response += content
+                                        
+                                        # Send chunk to client immediately
+                                        chunk_index += 1
+                                        await manager.send_personal_message({
+                                            "type": "message_chunk",
+                                            "content": content,
+                                            "stream_id": stream_id,
+                                            "chunk_index": chunk_index,
+                                            "chat_id": chat_id
+                                        }, websocket)
+                                    
+                                    # Check for finish_reason
+                                    finish_reason = chunk_data['choices'][0].get('finish_reason')
+                                    if finish_reason == 'stop':
+                                        break
+                            
+                            except json.JSONDecodeError:
+                                print(f"Failed to parse JSON: {data_str}")
+                                continue
+        
+        # Prepare the final content
+        final_content = full_response
+        
+        # Save complete/partial message to database
+        with SessionLocal() as db:
+            chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+            if not chat:
+                await manager.send_personal_message({
+                    "type": "error",
+                    "message": "Chat not found",
+                    "chat_id": chat_id
+                }, websocket)
+                return full_response
+            
+            message = Message(chat_id=chat_id, role="assistant", content=final_content)
+            db.add(message)
+            chat.updated_at = datetime.utcnow()
+            db.commit()
+            
+            # Send message complete with ID
+            status = "cancelled" if was_cancelled else "completed"
+            print(f"[External API] Response {status} for chat {chat_id} (stream {stream_id})")
+            await manager.send_personal_message({
+                "type": "message_complete",
+                "id": message.id,
+                "role": "assistant",
+                "content": final_content,
+                "created_at": message.created_at.isoformat(),
+                "stream_id": stream_id,
+                "chunk_count": chunk_index,
+                "chat_id": chat_id
+            }, websocket)
+        
+        return full_response
+        
+    except asyncio.CancelledError:
+        # Handle cancellation gracefully - save partial response
+        print(f"[External API] Task cancelled for stream {stream_id}")
+        final_content = full_response
+        if full_response.strip():
+            try:
+                with SessionLocal() as db:
+                    chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+                    if chat:
+                        message = Message(chat_id=chat_id, role="assistant", content=final_content)
+                        db.add(message)
+                        chat.updated_at = datetime.utcnow()
+                        db.commit()
+                        
+                        await manager.send_personal_message({
+                            "type": "message_complete",
+                            "id": message.id,
+                            "role": "assistant",
+                            "content": final_content,
+                            "created_at": message.created_at.isoformat(),
+                            "stream_id": stream_id,
+                            "chat_id": chat_id
+                        }, websocket)
+            except Exception as save_err:
+                print(f"Error saving cancelled response: {save_err}")
+        else:
+            # No content - just send message_complete to close
+            try:
+                await manager.send_personal_message({
+                    "type": "message_complete",
+                    "id": None,
+                    "role": "assistant",
+                    "content": "*Generation stopped by user*",
+                    "created_at": datetime.utcnow().isoformat(),
+                    "stream_id": stream_id,
+                    "chat_id": chat_id
+                }, websocket)
+            except Exception:
+                pass
+        return full_response
+        
+    except Exception as e:
+        import traceback
+
+        # Log rich diagnostics about the external error
+        print(f"External API error: {e!r}")
+        print(f"External API error type: {type(e).__name__}")
+        traceback.print_exc()
+
+        error_msg = str(e) or type(e).__name__
+
+        # If we already have some content, preserve it and treat the error as partial failure
+        if full_response.strip():
+            # Append a short note to the end of the model output so the user
+            # sees the incomplete answer first, then the error notice.
+            # Extract a meaningful short error message
+            short_msg = error_msg
+            if len(short_msg) > 300:
+                short_msg = short_msg[:300] + "..."
+            
+            # Add a clear note at the end
+            response_with_note = (
+                full_response
+                + f"\n\n---\n⚠️ **Response incomplete**: {short_msg}"
+            )
+            try:
+                # DO NOT send error event here - it causes frontend to delete the message!
+                # Just send message_complete with the content + error note
+                await manager.send_personal_message({
+                    "type": "message_complete",
+                    "id": None,
+                    "role": "assistant",
+                    "content": response_with_note,
+                    "created_at": datetime.utcnow().isoformat(),
+                    "stream_id": stream_id,
+                    "chat_id": chat_id
+                }, websocket)
+            except Exception as send_err:
+                # Log but do not re-raise to avoid masking the original error
+                print(f"Error sending partial external response: {send_err}")
+            return full_response
+
+        # No content at all – behave like a hard failure
+        await manager.send_personal_message({
+            "type": "error",
+            "message": f"API error: {error_msg}",
+            "stream_id": stream_id,
+            "chat_id": chat_id
+        }, websocket)
+        # Also send message_complete to close the streaming message
+        await manager.send_personal_message({
+            "type": "message_complete",
+            "id": None,
+            "role": "assistant",
+            "content": f"Error: {error_msg}",
+            "created_at": datetime.utcnow().isoformat(),
+            "chat_id": chat_id
+        }, websocket)
+        return ""
+
+
+async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, content: str, model: str, stream_id: str = None, cancelled_streams: set = None):
     user_payload = None
+    stream_id = stream_id or str(uuid.uuid4())
+    cancelled_streams = cancelled_streams or set()
 
     try:
         with SessionLocal() as db:
@@ -657,7 +942,42 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
         openai_model = MODEL_MAP.get(model)
         print(f"Mapped model: {openai_model}")
         
-        if openai_model is None or openai_client is None:
+        # Check if model uses external API
+        if openai_model and openai_model in EXTERNAL_MODEL_APIS:
+            # Use external API
+            external_api_url = EXTERNAL_MODEL_APIS[openai_model]
+            
+            # Get conversation history
+            with SessionLocal() as db:
+                chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+                if not chat:
+                    await manager.send_personal_message({
+                        "type": "error",
+                        "message": "Chat not found",
+                        "chat_id": chat_id
+                    }, websocket)
+                    return
+                
+                # Build message history
+                messages_history = []
+                for msg in chat.messages[-20:]:  # Last 20 messages for context
+                    messages_history.append({"role": msg.role, "content": msg.content})
+                messages_history.append({"role": "user", "content": content})
+            
+            # Start streaming response
+            start_time = time.time()
+            print(f"[TIMING] External API streaming started for chat {chat_id} (stream {stream_id}) at {start_time}")
+            await manager.send_personal_message({
+                "type": "message_start",
+                "role": "assistant",
+                "stream_id": stream_id,
+                "chat_id": chat_id
+            }, websocket)
+            
+            # Stream response from external API
+            await call_external_model_api(external_api_url, messages_history, websocket, chat_id, user_id, stream_id, cancelled_streams)
+            
+        elif openai_model is None or openai_client is None:
             # Use simulated response for Auto or if OpenAI not available
             await asyncio.sleep(0.5)
             agent_response = f"This is a simulated agent response to: {content[:30]}..."
@@ -707,12 +1027,11 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
                 ]
                 messages_history.extend([
                     {"role": msg.role, "content": msg.content}
-                    for msg in chat.messages[-10:]  # Last 10 messages for context
+                    for msg in chat.messages[-500:]  # Last 500 messages for context
                 ])
                 messages_history.append({"role": "user", "content": content})
 
-            # Start streaming response
-            stream_id = str(uuid.uuid4())
+            # Start streaming response (use provided stream_id)
             start_time = time.time()
             print(f"[TIMING] Streaming response started for chat {chat_id} (stream {stream_id}) at {start_time}")
             await manager.send_personal_message({
@@ -754,8 +1073,21 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
                 streaming_error = None
                 chunk_index = 0
 
+                was_cancelled = False
                 while True:
-                    event_type, payload = await stream_queue.get()
+                    # Check for cancellation
+                    if stream_id in cancelled_streams:
+                        print(f"[OpenAI] Stream {stream_id} cancelled by user")
+                        was_cancelled = True
+                        worker_task.cancel()
+                        break
+                    
+                    try:
+                        # Use timeout to allow checking for cancellation periodically
+                        event_type, payload = await asyncio.wait_for(stream_queue.get(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        continue
+                    
                     if event_type == "done":
                         break
                     if event_type == "error":
@@ -821,9 +1153,15 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
                     raise RuntimeError(streaming_error)
 
                 if not worker_task.done():
-                    await worker_task
+                    try:
+                        await worker_task
+                    except asyncio.CancelledError:
+                        pass
 
-                # Save complete message to database
+                # Prepare final content
+                final_content = full_response
+
+                # Save complete/partial message to database
                 with SessionLocal() as db:
                     chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
                     if not chat:
@@ -834,18 +1172,19 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
                         }, websocket)
                         return
 
-                    agent_message = Message(chat_id=chat_id, role="assistant", content=full_response)
+                    agent_message = Message(chat_id=chat_id, role="assistant", content=final_content)
                     db.add(agent_message)
                     chat.updated_at = datetime.utcnow()
                     db.commit()
 
                     # Send message complete with ID
-                    print(f"Streaming response completed for chat {chat_id} (stream {stream_id})")
+                    status = "cancelled" if was_cancelled else "completed"
+                    print(f"Streaming response {status} for chat {chat_id} (stream {stream_id})")
                     await manager.send_personal_message({
                         "type": "message_complete",
                         "id": agent_message.id,
                         "role": "assistant",
-                        "content": full_response,
+                        "content": final_content,
                         "created_at": agent_message.created_at.isoformat(),
                         "stream_id": stream_id,
                         "chunk_count": chunk_index,
@@ -853,29 +1192,64 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
                     }, websocket)
 
             except Exception as openai_err:
-                print(f"OpenAI API error: {openai_err}")
                 import traceback
+                print(f"OpenAI API error: {openai_err!r}")
                 traceback.print_exc()
-                error_msg = str(openai_err)
-                await manager.send_personal_message({
-                    "type": "error",
-                    "message": f"Error calling OpenAI: {error_msg}",
-                    "stream_id": locals().get('stream_id'),
-                    "chat_id": chat_id
-                }, websocket)
-                # Also send message_complete to close the streaming message
-                await manager.send_personal_message({
-                    "type": "message_complete",
-                    "id": None,
-                    "role": "assistant",
-                    "content": f"Error: {error_msg}",
-                    "created_at": datetime.utcnow().isoformat(),
-                    "chat_id": chat_id
-                }, websocket)
+                error_msg = str(openai_err) or type(openai_err).__name__
+
+                if full_response.strip():
+                    # We have partial content: keep it and append a short note.
+                    short_msg = error_msg
+                    if len(short_msg) > 300:
+                        short_msg = short_msg[:300] + "..."
+                    response_with_note = (
+                        full_response
+                        + f"\n\n---\n⚠️ **Response incomplete**: {short_msg}"
+                    )
+
+                    # Persist partial response
+                    with SessionLocal() as db:
+                        chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+                        if chat:
+                            agent_message = Message(chat_id=chat_id, role="assistant", content=response_with_note)
+                            db.add(agent_message)
+                            chat.updated_at = datetime.utcnow()
+                            db.commit()
+
+                            # Tell client the stream is complete with the partial response
+                            # DO NOT send error event - it causes frontend to delete the message!
+                            await manager.send_personal_message({
+                                "type": "message_complete",
+                                "id": agent_message.id,
+                                "role": "assistant",
+                                "content": response_with_note,
+                                "created_at": agent_message.created_at.isoformat(),
+                                "stream_id": stream_id,
+                                "chunk_count": chunk_index,
+                                "chat_id": chat_id
+                            }, websocket)
+                else:
+                    # No partial content at all – behave like a hard failure
+                    await manager.send_personal_message({
+                        "type": "error",
+                        "message": f"Error calling OpenAI: {error_msg}",
+                        "stream_id": stream_id,
+                        "chat_id": chat_id
+                    }, websocket)
+                    # Also send message_complete to close the streaming message with an explicit error text
+                    await manager.send_personal_message({
+                        "type": "message_complete",
+                        "id": None,
+                        "role": "assistant",
+                        "content": f"Error: {error_msg}",
+                        "created_at": datetime.utcnow().isoformat(),
+                        "chat_id": chat_id
+                    }, websocket)
 
     except Exception as agent_err:
-        print(f"Error generating agent response: {agent_err}")
         import traceback
+        print(f"Error generating agent response: {agent_err!r}")
+        print(f"Agent error type: {type(agent_err).__name__}")
         traceback.print_exc()
         try:
             await manager.send_personal_message({

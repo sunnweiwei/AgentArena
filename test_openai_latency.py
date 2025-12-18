@@ -49,7 +49,7 @@ def measure_latency(client: OpenAI, prompt: str, model: str) -> LatencySample:
     start = time.perf_counter()
     first_chunk_time: Optional[float] = None
     chunk_count = 0
-
+    
     stream = client.responses.create(
         model=model,
         input=[
@@ -60,7 +60,7 @@ def measure_latency(client: OpenAI, prompt: str, model: str) -> LatencySample:
         ],
         stream=True,
     )
-
+    
     for event in stream:
         event_type = getattr(event, "type", "")
         if event_type == "response.output_text.delta":
@@ -69,7 +69,7 @@ def measure_latency(client: OpenAI, prompt: str, model: str) -> LatencySample:
             chunk_count += 1
 
     end = time.perf_counter()
-    if first_chunk_time is None:
+                if first_chunk_time is None:
         raise RuntimeError("Did not receive any output_text.delta events")
 
     return LatencySample(

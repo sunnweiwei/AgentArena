@@ -50,7 +50,8 @@ code {
   --scrollbar-track: #202123;
   --scrollbar-thumb: #565869;
   --scrollbar-thumb-hover: #6e6e80;
-  --header-glass-bg: rgba(31, 32, 40, 0);
+  /* Semi-transparent so messages show through with blur */
+  --header-glass-bg: rgba(32, 33, 35, 0.35);
   --header-glass-border: rgba(255, 255, 255, 0.18);
   --input-glass-bg: rgba(255, 255, 255, 0.08);
   --input-glass-border: rgba(255, 255, 255, 0.12);
@@ -71,12 +72,13 @@ code {
   --scrollbar-track: #f7f7f8;
   --scrollbar-thumb: #d1d5db;
   --scrollbar-thumb-hover: #9ca3af;
-  --header-glass-bg: rgba(247, 247, 248, 0);
+  /* Semi-transparent so messages show through with blur */
+  --header-glass-bg: rgba(255, 255, 255, 0.35);
   --header-glass-border: rgba(15, 23, 42, 0.15);
   --input-glass-bg: rgba(255, 255, 255, 0.85);
   --input-glass-border: rgba(15, 23, 42, 0.12);
-  --input-form-bg: rgba(255, 255, 255, 0.98);
-  --input-form-border: rgba(15, 23, 42, 0.08);
+  --input-form-bg: rgba(255, 255, 255, 0.75);
+  --input-form-border: rgba(15, 23, 42, 0.06);
 }
 
 body {

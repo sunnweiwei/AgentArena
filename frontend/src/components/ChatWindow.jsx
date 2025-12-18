@@ -41,6 +41,11 @@ const ChatWindow = ({
   const [connectionNotice, setConnectionNotice] = useState('')
   const [selectedModel, setSelectedModel] = useState('Auto')
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false)
+  const [isStreaming, setIsStreaming] = useState(false)
+  const [canvasOpen, setCanvasOpen] = useState(false)
+  const [splitRatio, setSplitRatio] = useState(50) // Percentage for left panel
+  const [isDragging, setIsDragging] = useState(false)
+  const activeStreamIdRef = useRef(null)
 
   const wsRef = useRef(null)
   const activeChatRef = useRef(null)
@@ -269,6 +274,8 @@ const ChatWindow = ({
     } else if (data.type === 'message_start') {
       const streamId = data.stream_id || `stream-${Date.now()}`
       streamingMessageIdRef.current = streamId
+      activeStreamIdRef.current = streamId
+      setIsStreaming(true)
       streamBuffersRef.current[streamId] = { chunks: [], text: '' }
       if (isDev) {
         console.log('[WS message_start]', 'streamId:', streamId, 'pending queue:', pendingWaitingMessageIdsRef.current)
@@ -295,6 +302,7 @@ const ChatWindow = ({
           return prev.map(m => m.id === waitingMsg.id ? {
             ...m,
             isLoading: true,
+            isStreaming: true,  // Start streaming
             role: 'assistant',
             content: m.content || '',
             isOptimistic: true,
@@ -319,6 +327,7 @@ const ChatWindow = ({
             content: '',
             created_at: new Date().toISOString(),
             isLoading: true,
+            isStreaming: true,  // Start streaming
             isOptimistic: true,
             chatId: currentChatId ?? null
           }
@@ -359,6 +368,7 @@ const ChatWindow = ({
               ...msg,
               role: 'assistant',
               isLoading: false,
+              isStreaming: true,  // Mark as actively streaming
               content: mergedText,
               isOptimistic: false,
               chatId: msg.chatId ?? currentChatId ?? null
@@ -378,6 +388,7 @@ const ChatWindow = ({
               clientId: targetId,
               role: 'assistant',
               isLoading: false,
+              isStreaming: true,  // Mark as actively streaming
               content: mergedText,
               created_at: new Date().toISOString(),
               isOptimistic: false,
@@ -388,7 +399,8 @@ const ChatWindow = ({
 
         return updated
       })
-      resolvePendingStream(currentChatId)
+      // Don't resolve pending stream yet - keep loading indicator during streaming
+      // resolvePendingStream(currentChatId)
     } else if (data.type === 'message_complete') {
       const finalText = extractChunkText(data.content)
       const streamId = data.stream_id || streamingMessageIdRef.current
@@ -423,6 +435,7 @@ const ChatWindow = ({
               clientId: msg.clientId || `server-${data.id}`,
               role: data.role,
               isLoading: false,
+              isStreaming: false,  // Stop streaming indicator
               created_at: data.created_at,
               content: finalText || msg.content || '',
               isOptimistic: false,
@@ -454,6 +467,8 @@ const ChatWindow = ({
         delete streamBuffersRef.current[streamId]
       }
       streamingMessageIdRef.current = null
+      activeStreamIdRef.current = null
+      setIsStreaming(false)
       resolvePendingStream(resolvedChatId ?? currentChatId)
       onChatUpdateRef.current?.()
       fetchMessagesRef.current({ showLoader: false })
@@ -513,12 +528,28 @@ const ChatWindow = ({
         uniqueMessages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
         setMessages((prev) => {
           const normalized = normalizeMessages(uniqueMessages.map((msg) => ({ ...msg, chatId })), chatId)
+          
+          // Get all active stream IDs for this chat
+          const activeStreamIds = new Set(Object.keys(streamBuffersRef.current))
+          const activeStreamMessageIds = new Set(
+            Object.values(streamIdToMessageIdRef.current).filter(id => 
+              prev.some(m => m.id === id && m.chatId === chatId)
+            )
+          )
+          
+          // Preserve placeholders AND actively streaming messages
           const placeholders = prev.filter((msg) => {
             const isTempId = typeof msg.id === 'string' && msg.id.startsWith('msg-')
-            return msg.chatId === chatId && (msg.isLoading || (isTempId && msg.isOptimistic))
+            const isPlaceholder = msg.chatId === chatId && (msg.isLoading || (isTempId && msg.isOptimistic))
+            const isActivelyStreaming = activeStreamMessageIds.has(msg.id)
+            return isPlaceholder || isActivelyStreaming
           })
 
           const filteredPlaceholders = placeholders.filter((placeholder) => {
+            // Don't filter out streaming messages even if they have a server ID
+            if (activeStreamMessageIds.has(placeholder.id)) {
+              return true
+            }
             return !normalized.some(
               (msg) =>
                 msg.id === placeholder.id ||
@@ -667,7 +698,11 @@ const ChatWindow = ({
   useEffect(() => {
     if (!chatId || !userId) return
     const interval = setInterval(() => {
-      fetchMessagesRef.current({ showLoader: false })
+      // Don't poll if actively streaming in this chat
+      const hasActiveStream = Object.keys(streamBuffersRef.current).length > 0
+      if (!hasActiveStream) {
+        fetchMessagesRef.current({ showLoader: false })
+      }
     }, connected ? 12000 : 4000)
     return () => clearInterval(interval)
   }, [connected, chatId, userId])
@@ -698,6 +733,8 @@ const ChatWindow = ({
 
     const waitingId = generateClientId()
     streamingMessageIdRef.current = waitingId
+    activeStreamIdRef.current = waitingId  // Set immediately so stop button shows
+    setIsStreaming(true)  // Show stop button immediately
     pendingWaitingMessageIdsRef.current.push(waitingId)
     setMessages(prev => [
       ...prev,
@@ -749,8 +786,84 @@ const ChatWindow = ({
       onChatPendingStateChange?.(chatId, false)
       delete pendingStreamMetaRef.current[chatId]
       setMessages(prev => prev.filter(msg => msg.id !== tempId && msg.id !== waitingId))
+      setIsStreaming(false)  // Reset streaming state on error
+      activeStreamIdRef.current = null
     }
   }
+
+  const handleMouseDown = useCallback((e) => {
+    e.preventDefault()
+    setIsDragging(true)
+  }, [])
+
+  const handleMouseMove = useCallback((e) => {
+    if (!isDragging) return
+    
+    const container = document.querySelector('.chat-window')
+    if (!container) return
+    
+    const containerRect = container.getBoundingClientRect()
+    const newRatio = ((e.clientX - containerRect.left) / containerRect.width) * 100
+    
+    // Constrain between 20% and 80%
+    if (newRatio >= 20 && newRatio <= 80) {
+      setSplitRatio(newRatio)
+    }
+  }, [isDragging])
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false)
+  }, [])
+
+  useEffect(() => {
+    if (isDragging) {
+      document.addEventListener('mousemove', handleMouseMove)
+      document.addEventListener('mouseup', handleMouseUp)
+      return () => {
+        document.removeEventListener('mousemove', handleMouseMove)
+        document.removeEventListener('mouseup', handleMouseUp)
+      }
+    }
+  }, [isDragging, handleMouseMove, handleMouseUp])
+
+  const stopGeneration = useCallback(() => {
+    const socket = wsRef.current
+    const streamId = activeStreamIdRef.current
+    
+    if (isDev) {
+      console.log('[stopGeneration] Called', { 
+        hasSocket: !!socket, 
+        socketReady: socket?.readyState === WebSocket.OPEN,
+        streamId, 
+        isStreaming, 
+        chatId
+      })
+    }
+    
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      console.warn('Cannot stop generation: WebSocket not connected')
+      return
+    }
+    
+    if (!streamId && !isStreaming) {
+      console.warn('No active stream to stop')
+      return
+    }
+    
+    try {
+      const payload = {
+        type: 'stop',
+        chat_id: chatId,
+        stream_id: streamId
+      }
+      if (isDev) {
+        console.log('[WS send stop]', payload)
+      }
+      socket.send(JSON.stringify(payload))
+    } catch (err) {
+      console.error('Failed to send stop message:', err)
+    }
+  }, [chatId, isStreaming])
 
   const handleLogin = async (username) => {
     if (!username || !username.trim()) return
@@ -768,7 +881,7 @@ const ChatWindow = ({
     }
   }
 
-  const models = ['Auto', 'GPT-5-Nano', 'GPT-5-Mini']
+  const models = ['Auto', 'GPT-5-Nano', 'GPT-5-Mini', 'Search Agent']
 
   const renderModelSelector = () => (
     <div className="model-selector-container" ref={modelSelectorRef}>
@@ -827,8 +940,23 @@ const ChatWindow = ({
             </svg>
           </button>
           {renderModelSelector()}
-          <div className="chat-status">
-            <span className="status-indicator disconnected">● Please log in</span>
+          <div className="header-right">
+            <button 
+              className={`canvas-toggle-button ${canvasOpen ? 'active' : ''}`}
+              onClick={() => setCanvasOpen(!canvasOpen)}
+              title={canvasOpen ? 'Hide canvas' : 'Show canvas'}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="9" y1="3" x2="9" y2="21"></line>
+                <line x1="15" y1="3" x2="15" y2="21"></line>
+                <line x1="3" y1="9" x2="21" y2="9"></line>
+                <line x1="3" y1="15" x2="21" y2="15"></line>
+              </svg>
+            </button>
+            <div className="chat-status">
+              <span className="status-indicator disconnected">● Please log in</span>
+            </div>
           </div>
         </div>
         <div className="chat-body login-state">
@@ -885,12 +1013,29 @@ const ChatWindow = ({
             </svg>
           </button>
           {renderModelSelector()}
-          <div className="chat-status"></div>
+          <div className="header-right">
+            <button 
+              className={`canvas-toggle-button ${canvasOpen ? 'active' : ''}`}
+              onClick={() => setCanvasOpen(!canvasOpen)}
+              title={canvasOpen ? 'Hide canvas' : 'Show canvas'}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="9" y1="3" x2="9" y2="21"></line>
+                <line x1="15" y1="3" x2="15" y2="21"></line>
+                <line x1="3" y1="9" x2="21" y2="9"></line>
+                <line x1="3" y1="15" x2="21" y2="15"></line>
+              </svg>
+            </button>
+            <div className="chat-status"></div>
+          </div>
         </div>
         <div className="chat-body">
           <MessageList messages={[]} />
         </div>
-        <MessageInput onSendMessage={sendMessage} disabled />
+        <div className={`message-input-wrapper ${canvasOpen ? 'with-canvas' : ''}`}>
+          <MessageInput onSendMessage={sendMessage} disabled isStreaming={false} />
+        </div>
       </div>
     )
   }
@@ -905,27 +1050,67 @@ const ChatWindow = ({
           </svg>
         </button>
         {renderModelSelector()}
-        <div className="chat-status">
-          {connected ? (
-            <span className="status-indicator connected">● Connected</span>
-          ) : (
-            <span className="status-indicator disconnected">● Connecting...</span>
-          )}
+        <div className="header-right">
+          <button 
+            className={`canvas-toggle-button ${canvasOpen ? 'active' : ''}`}
+            onClick={() => setCanvasOpen(!canvasOpen)}
+            title={canvasOpen ? 'Hide canvas' : 'Show canvas'}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="9" y1="3" x2="9" y2="21"></line>
+              <line x1="15" y1="3" x2="15" y2="21"></line>
+              <line x1="3" y1="9" x2="21" y2="9"></line>
+              <line x1="3" y1="15" x2="21" y2="15"></line>
+            </svg>
+          </button>
+          <div className="chat-status">
+            {connected ? (
+              <span className="status-indicator connected">● Connected</span>
+            ) : (
+              <span className="status-indicator disconnected">● Connecting...</span>
+            )}
+          </div>
         </div>
       </div>
-      <div className="chat-body">
-        {connectionNotice && (
-          <div className="connection-notice">
-            {connectionNotice}
-          </div>
-        )}
-        {loading ? (
-          <div className="loading-messages">Loading messages...</div>
-        ) : (
-          <MessageList messages={messages} />
+      <div className={`chat-body ${canvasOpen ? 'with-canvas' : ''} ${sidebarOpen ? 'sidebar-open' : ''}`}>
+        <div className="chat-content" style={canvasOpen ? { width: `${splitRatio}%` } : {}}>
+          {connectionNotice && (
+            <div className="connection-notice">
+              {connectionNotice}
+            </div>
+          )}
+          {loading ? (
+            <div className="loading-messages">Loading messages...</div>
+          ) : (
+            <MessageList messages={messages} />
+          )}
+        </div>
+        {canvasOpen && (
+          <>
+            <div className="canvas-overlay" onClick={() => setCanvasOpen(false)} />
+            <div 
+              className="resize-handle"
+              onMouseDown={handleMouseDown}
+            >
+              <div className="resize-handle-line" />
+            </div>
+            <div className="canvas-panel" style={{ width: `${100 - splitRatio}%` }}>
+              <div className="canvas-container">
+                {/* Canvas content will go here */}
+              </div>
+            </div>
+          </>
         )}
       </div>
-      <MessageInput onSendMessage={sendMessage} disabled={!chatId} />
+      <div className={`message-input-wrapper ${canvasOpen ? 'with-canvas' : ''}`} style={canvasOpen ? { width: `${splitRatio}%` } : {}}>
+        <MessageInput 
+          onSendMessage={sendMessage} 
+          onStopGeneration={stopGeneration}
+          disabled={!chatId} 
+          isStreaming={isStreaming} 
+        />
+      </div>
     </div>
   )
 }
