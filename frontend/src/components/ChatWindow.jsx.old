@@ -1,0 +1,571 @@
+import React, { useState, useEffect, useRef } from 'react'
+import axios from 'axios'
+import MessageList from './MessageList'
+import MessageInput from './MessageInput'
+import './ChatWindow.css'
+
+const isDev = import.meta.env.DEV
+
+const extractChunkText = (content) => {
+  if (!content) return ''
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content.map(part => {
+      if (typeof part === 'string') return part
+      if (part?.text) return part.text
+      if (part?.content) return part.content
+      return ''
+    }).join('')
+  }
+  if (typeof content === 'object' && content.text) {
+    return content.text
+  }
+  return String(content)
+}
+
+const ChatWindow = ({
+  chatId,
+  userId,
+  onUpdateTitle,
+  onChatUpdate,
+  onCreateChat,
+  user,
+  onLogin,
+  sidebarOpen,
+  onToggleSidebar
+}) => {
+  const [messages, setMessages] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [connected, setConnected] = useState(false)
+  const [connectionNotice, setConnectionNotice] = useState('')
+  const [selectedModel, setSelectedModel] = useState('Auto')
+  const [modelSelectorOpen, setModelSelectorOpen] = useState(false)
+  const wsRef = useRef(null)
+  const activeChatRef = useRef(null)
+  const reconnectTimeoutRef = useRef(null)
+  const requestIdRef = useRef(0)
+  const onUpdateTitleRef = useRef(onUpdateTitle)
+  const onChatUpdateRef = useRef(onChatUpdate)
+  const modelSelectorRef = useRef(null)
+  const streamingMessageIdRef = useRef(null)
+
+  useEffect(() => {
+    onUpdateTitleRef.current = onUpdateTitle
+  }, [onUpdateTitle])
+
+  useEffect(() => {
+    onChatUpdateRef.current = onChatUpdate
+  }, [onChatUpdate])
+
+  // Close model selector when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (modelSelectorRef.current && !modelSelectorRef.current.contains(event.target)) {
+        setModelSelectorOpen(false)
+      }
+    }
+
+    if (modelSelectorOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside)
+      }
+    }
+  }, [modelSelectorOpen])
+
+  useEffect(() => {
+    activeChatRef.current = chatId ?? null
+
+    setMessages([])
+    setConnected(false)
+
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
+
+    if (wsRef.current) {
+      wsRef.current.close()
+      wsRef.current = null
+    }
+
+    if (!chatId || !userId) {
+      return () => {
+        if (wsRef.current) {
+          wsRef.current.close()
+          wsRef.current = null
+        }
+      }
+    }
+
+    let isCurrent = true
+    const requestId = ++requestIdRef.current
+
+    const fetchMessages = async () => {
+      setLoading(true)
+      try {
+        const response = await axios.get(`/api/chats/${chatId}`, {
+          params: { user_id: userId }
+        })
+
+        if (!isCurrent || activeChatRef.current !== chatId || requestId !== requestIdRef.current) {
+          return
+        }
+
+        setMessages(response.data.messages)
+
+        if (response.data.title === 'New Chat' && response.data.messages.length > 0) {
+          const firstUserMessage = response.data.messages.find(m => m.role === 'user')
+          if (firstUserMessage) {
+            const truncated = firstUserMessage.content.slice(0, 50)
+            onUpdateTitleRef.current?.(chatId, truncated.length === firstUserMessage.content.length ? truncated : `${truncated}...`)
+          }
+        }
+      } catch (err) {
+        if (isCurrent) {
+          console.error('Failed to load messages:', err)
+        }
+      } finally {
+        if (isCurrent) {
+          setLoading(false)
+        }
+      }
+    }
+
+    const openSocket = () => {
+      if (!isCurrent || activeChatRef.current !== chatId) return
+
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const wsHost = window.location.host
+      const socket = new WebSocket(`${wsProtocol}//${wsHost}/ws/chat/${chatId}/${userId}`)
+      wsRef.current = socket
+
+      socket.onopen = () => {
+        if (!isCurrent || activeChatRef.current !== chatId) {
+          socket.close()
+          return
+        }
+        setConnected(true)
+        setConnectionNotice('')
+      }
+
+      socket.onmessage = (event) => {
+        if (!isCurrent || activeChatRef.current !== chatId) return
+
+        const data = JSON.parse(event.data)
+        if (isDev) {
+          console.log('[WS]', data)
+        }
+        
+        if (data.type === 'message') {
+          setMessages(prev => {
+            let updated = prev
+            if (data.role === 'assistant') {
+              const assistantText = extractChunkText(data.content)
+              // Remove waiting placeholder for non-streaming responses
+              const waitingMsg = prev.find(m => m.isLoading)
+              if (waitingMsg) {
+                updated = prev.filter(m => m.id !== waitingMsg.id)
+              }
+              return [
+                ...updated,
+                {
+                  id: data.id,
+                  role: data.role,
+                  content: assistantText,
+                  created_at: data.created_at
+                }
+              ]
+            }
+
+            // Remove duplicate user message if it exists (optimistic update)
+            if (data.role === 'user') {
+              const tempUserMsg = prev.find(m => m.id.startsWith('temp-') && m.content === data.content)
+              if (tempUserMsg) {
+                return prev.map(m => m.id === tempUserMsg.id ? { ...m, id: data.id } : m)
+              }
+            }
+
+            return [
+              ...prev,
+              {
+                id: data.id,
+                role: data.role,
+                content: data.content,
+                created_at: data.created_at
+              }
+            ]
+          })
+
+          if (data.role === 'user') {
+            onChatUpdateRef.current?.()
+          }
+        } else if (data.type === 'message_start') {
+          // Start of streaming message - convert waiting message to streaming
+          if (isDev) {
+            console.log('[WS message_start]', 'Looking for waiting message')
+          }
+          setMessages(prev => {
+            const waitingMsg = prev.find(m => m.isLoading)
+            if (isDev) {
+              console.log('[WS message_start]', 'Found waiting msg:', waitingMsg?.id, 'All messages:', prev.map(m => ({ id: m.id, isLoading: m.isLoading })))
+            }
+            if (waitingMsg) {
+              // Keep the same ID, just remove the loading flag
+              streamingMessageIdRef.current = waitingMsg.id
+              if (isDev) {
+                console.log('[WS message_start]', 'Set streamingMessageIdRef to:', waitingMsg.id)
+              }
+              return prev.map(m => m.id === waitingMsg.id ? {
+                ...m,
+                isLoading: false,
+                role: 'assistant',
+                content: ''
+              } : m)
+            }
+            // If no waiting message found, create a new one
+            const streamId = 'streaming-' + Date.now()
+            streamingMessageIdRef.current = streamId
+            if (isDev) {
+              console.log('[WS message_start]', 'No waiting msg found, created new:', streamId)
+            }
+            return [...prev, {
+              id: streamId,
+              role: 'assistant',
+              content: '',
+              created_at: new Date().toISOString()
+            }]
+          })
+        } else if (data.type === 'message_chunk') {
+          const chunkText = extractChunkText(data.content)
+          if (isDev) {
+            console.log('[WS chunk]', chunkText, 'streamingId:', streamingMessageIdRef.current)
+          }
+          if (!chunkText) return
+          setMessages(prev => {
+            const updated = prev.map(msg => {
+              if (msg.id === streamingMessageIdRef.current) {
+                if (isDev) {
+                  console.log('[WS chunk] Updating message:', msg.id, 'old content length:', msg.content.length, 'new chunk:', chunkText)
+                }
+                return {
+                  ...msg,
+                  content: msg.content + chunkText
+                }
+              }
+              return msg
+            })
+            if (isDev && !updated.some(m => m.id === streamingMessageIdRef.current)) {
+              console.log('[WS chunk] ERROR: No message found with id:', streamingMessageIdRef.current, 'Available IDs:', prev.map(m => m.id))
+            }
+            return updated
+          })
+        } else if (data.type === 'message_complete') {
+          const finalText = extractChunkText(data.content)
+          setMessages(prev => prev.map(msg => {
+            if (msg.id === streamingMessageIdRef.current) {
+              return {
+                id: data.id,
+                role: data.role,
+                content: finalText,
+                created_at: data.created_at
+              }
+            }
+            return msg
+          }))
+          streamingMessageIdRef.current = null
+          onChatUpdateRef.current?.()
+        } else if (data.type === 'error') {
+          console.error('Server error:', data.message)
+          setConnectionNotice(data.message || 'An error occurred')
+          // Remove waiting message on error
+          setMessages(prev => prev.filter(m => !m.isLoading))
+        }
+      }
+
+      socket.onerror = (error) => {
+        console.error('WebSocket error:', error)
+        setConnectionNotice('Connection error. Reconnecting…')
+      }
+
+      socket.onclose = () => {
+        if (wsRef.current === socket) {
+          wsRef.current = null
+          setConnected(false)
+          setConnectionNotice('Disconnected. Reconnecting…')
+        }
+
+        if (isCurrent && activeChatRef.current === chatId) {
+          reconnectTimeoutRef.current = setTimeout(() => {
+            reconnectTimeoutRef.current = null
+            openSocket()
+          }, 1500)
+        }
+      }
+    }
+
+    fetchMessages()
+    openSocket()
+
+    return () => {
+      isCurrent = false
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+        reconnectTimeoutRef.current = null
+      }
+      if (wsRef.current) {
+        wsRef.current.close()
+        wsRef.current = null
+      }
+    }
+  }, [chatId, userId])
+
+  const sendMessage = async (content) => {
+    const trimmed = content.trim()
+    if (!trimmed) return
+
+    if (!chatId) {
+      console.warn('No active chat to send message')
+      return
+    }
+
+    const socket = wsRef.current
+    if (!connected || !socket || socket.readyState !== WebSocket.OPEN) {
+      setConnectionNotice('Not connected. Please wait until status shows Connected.')
+      return
+    }
+
+    // Optimistically add user message
+    const tempId = 'temp-' + Date.now()
+    setMessages(prev => [
+      ...prev,
+      {
+        id: tempId,
+        role: 'user',
+        content: trimmed,
+        created_at: new Date().toISOString()
+      }
+    ])
+
+    // Add temporary waiting message
+    const waitingId = 'waiting-' + Date.now()
+    streamingMessageIdRef.current = waitingId
+    setMessages(prev => [
+      ...prev,
+      {
+        id: waitingId,
+        role: 'assistant',
+        content: '',
+        isLoading: true, // New flag for loading state
+        created_at: new Date().toISOString()
+      }
+    ])
+
+    try {
+      const payload = {
+        type: 'message',
+        content: trimmed,
+        model: selectedModel
+      }
+      if (isDev) {
+        console.log('[WS send]', payload)
+      }
+      socket.send(JSON.stringify(payload))
+    } catch (err) {
+      console.error('Failed to send message:', err)
+      setConnectionNotice('Unable to send message. Connection issue.')
+      // Remove optimistic messages on error
+      setMessages(prev => prev.filter(msg => msg.id !== tempId && msg.id !== waitingId))
+    }
+  }
+
+  const handleLogin = async (username) => {
+    if (!username || !username.trim()) return
+    
+    try {
+      const response = await axios.post('/api/auth/login', {
+        email: username.trim()
+      })
+      console.log('Login response:', response.data)
+      if (response.data && response.data.user_id) {
+        onLogin(response.data)
+      } else {
+        console.error('Invalid login response:', response.data)
+      }
+    } catch (err) {
+      console.error('Login failed:', err)
+    }
+  }
+
+  const models = ['Auto', 'GPT-5-Nano', 'GPT-5-Mini']
+
+  const renderModelSelector = () => (
+    <div className="model-selector-container" ref={modelSelectorRef}>
+      <button
+        className="model-selector-button"
+        onClick={() => setModelSelectorOpen(!modelSelectorOpen)}
+        title="Select model"
+      >
+        <span className="model-selector-label">{selectedModel}</span>
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={`model-selector-arrow ${modelSelectorOpen ? 'open' : ''}`}
+        >
+          <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
+      </button>
+      {modelSelectorOpen && (
+        <div className="model-selector-dropdown">
+          {models.map((model) => (
+            <button
+              key={model}
+              className={`model-option ${selectedModel === model ? 'selected' : ''}`}
+              onClick={() => {
+                if (isDev) {
+                  console.log('[Model selected]', model)
+                }
+                setSelectedModel(model)
+                setModelSelectorOpen(false)
+              }}
+            >
+              {model}
+              {selectedModel === model && (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+
+  // Show login if user not logged in
+  if (!user) {
+    return (
+      <div className="chat-window">
+        <div className="chat-header">
+          <button className="menu-button" onClick={onToggleSidebar} title={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}>
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="3" width="6" height="14" rx="1"/>
+              <rect x="11" y="3" width="6" height="14" rx="1"/>
+            </svg>
+          </button>
+          {renderModelSelector()}
+          <div className="chat-status">
+            <span className="status-indicator disconnected">● Please log in</span>
+          </div>
+        </div>
+        <div className="chat-body login-state">
+          <div className="prelogin-messages">
+            <span className="placeholder-label">Preview</span>
+            <div className="placeholder-message user" />
+            <div className="placeholder-message assistant" />
+            <div className="placeholder-message user short" />
+            <div className="placeholder-message assistant long" />
+          </div>
+          <div className="login-overlay">
+            <div className="login-overlay-card">
+              <h2>Welcome to Chat</h2>
+              <p>Sign in to continue your conversations</p>
+              <div className="login-input-wrapper">
+                <input
+                  type="text"
+                  placeholder="Enter username"
+                  className="login-input-inline"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && e.target.value.trim()) {
+                      handleLogin(e.target.value)
+                    }
+                  }}
+                  autoFocus
+                />
+                <button
+                  className="login-button-inline"
+                  onClick={(e) => {
+                    const input = e.target.previousElementSibling
+                    if (input && input.value.trim()) {
+                      handleLogin(input.value)
+                    }
+                  }}
+                >
+                  Continue
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // If no chatId but user is logged in, show empty state with input at bottom
+  if (!chatId && user) {
+    return (
+      <div className="chat-window">
+        <div className="chat-header">
+          <button className="menu-button" onClick={onToggleSidebar} title={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}>
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="3" width="6" height="14" rx="1"/>
+              <rect x="11" y="3" width="6" height="14" rx="1"/>
+            </svg>
+          </button>
+          {renderModelSelector()}
+          <div className="chat-status"></div>
+        </div>
+        <div className="chat-body">
+          <MessageList messages={[]} />
+        </div>
+        <MessageInput onSendMessage={sendMessage} disabled />
+      </div>
+    )
+  }
+
+  return (
+    <div className="chat-window">
+      <div className="chat-header">
+        <button className="menu-button" onClick={onToggleSidebar} title={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="3" width="6" height="14" rx="1"/>
+            <rect x="11" y="3" width="6" height="14" rx="1"/>
+          </svg>
+        </button>
+        {renderModelSelector()}
+        <div className="chat-status">
+          {connected ? (
+            <span className="status-indicator connected">● Connected</span>
+          ) : (
+            <span className="status-indicator disconnected">● Connecting...</span>
+          )}
+        </div>
+      </div>
+      
+      <div className="chat-body">
+        {connectionNotice && (
+          <div className="connection-notice">
+            {connectionNotice}
+          </div>
+        )}
+
+        {loading ? (
+          <div className="loading-messages">Loading messages...</div>
+        ) : (
+          <MessageList messages={messages} />
+        )}
+      </div>
+      
+      <MessageInput onSendMessage={sendMessage} disabled={!connected || !chatId} />
+    </div>
+  )
+}
+
+export default ChatWindow
+

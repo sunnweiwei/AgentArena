@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect } from 'react'
 import axios from 'axios'
 import './MessageInput.css'
 
-const SECURE_URL = 'https://sf.lti.cs.cmu.edu:3000'
 const MessageInput = ({ onSendMessage, onStopGeneration, disabled, isStreaming }) => {
   const [message, setMessage] = useState('')
   const [isRecording, setIsRecording] = useState(false)
@@ -58,24 +57,17 @@ const MessageInput = ({ onSendMessage, onStopGeneration, disabled, isStreaming }
 
   const startRecording = async () => {
     try {
-      if (!isSecureContextState || window.location.protocol !== 'https:') {
-        alert(
-          'Voice recording requires a secure HTTPS connection.\n\n' +
-          `Please open ${SECURE_URL} and accept the certificate warning to enable voice input.`
-        )
-        return
-      }
       // Check if we're on HTTPS or localhost (required for getUserMedia in most browsers)
       const isSecure = location.protocol === 'https:' || 
                        location.hostname === 'localhost' || 
-                       location.hostname === '127.0.0.1'
+                       location.hostname === '127.0.0.1' ||
+                       window.isSecureContext
       
-    if (!isSecure) {
-      alert('Microphone access requires HTTPS. The current page is loaded over HTTP.\n\n' +
-            `Please access the site via HTTPS:\n${SECURE_URL}\n\n` +
-            'Or contact the administrator to set up HTTPS for the frontend.')
-      return
-    }
+      if (!isSecure) {
+        // Silently fail - browser will handle the error
+        console.warn('Microphone access may not be available on HTTP. Try HTTPS if available.')
+        return
+      }
 
     // Check if getUserMedia is available
     if (!navigator.mediaDevices) {
@@ -376,28 +368,24 @@ const MessageInput = ({ onSendMessage, onStopGeneration, disabled, isStreaming }
         />
         <button
           type="button"
-          className={`voice-button ${isRecording ? 'recording' : ''} ${isRequestingAccess ? 'requesting' : ''} ${isTranscribing ? 'transcribing' : ''} ${!isSecureContextState ? 'disabled' : ''}`}
+          className={`voice-button ${isRecording ? 'recording' : ''} ${isRequestingAccess ? 'requesting' : ''} ${isTranscribing ? 'transcribing' : ''}`}
           onClick={handleVoiceButtonClick}
-          disabled={disabled || isTranscribing || isRequestingAccess || !isSecureContextState}
+          disabled={disabled || isTranscribing || isRequestingAccess}
           aria-label={
-            !isSecureContextState
-              ? "Voice input requires HTTPS"
-              : isRecording
-                ? "Stop recording"
-                : isRequestingAccess
-                  ? "Requesting microphone access..."
-                  : "Start voice recording"
+            isRecording
+              ? "Stop recording"
+              : isRequestingAccess
+                ? "Requesting microphone access..."
+                : "Start voice recording"
           }
           title={
-            !isSecureContextState
-              ? `Open ${SECURE_URL} to enable voice input`
-              : isRecording
-                ? "Stop recording"
-                : isRequestingAccess
-                  ? "Requesting microphone access..."
-                  : isTranscribing
-                    ? "Transcribing..."
-                    : "Start voice recording"
+            isRecording
+              ? "Stop recording"
+              : isRequestingAccess
+                ? "Requesting microphone access..."
+                : isTranscribing
+                  ? "Transcribing..."
+                  : "Start voice recording"
           }
         >
           {isRequestingAccess ? (
@@ -451,11 +439,6 @@ const MessageInput = ({ onSendMessage, onStopGeneration, disabled, isStreaming }
           </button>
         )}
       </form>
-      {!isSecureContextState && (
-        <div className="voice-warning">
-          Voice input requires HTTPS. Open {SECURE_URL} and accept the certificate warning, then refresh this page.
-        </div>
-      )}
     </div>
   )
 }

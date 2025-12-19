@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
-import { AgentContent } from './AgentBlock'
+import { AgentContent, extractCanvasContent } from './AgentBlock'
 import './MessageList.css'
 
 const MessageList = ({ messages, onScrollToBottom }) => {
@@ -65,15 +65,20 @@ const MessageList = ({ messages, onScrollToBottom }) => {
       ) : (
         <>
           {messages.map((message, index) => {
-            // Check if message contains agent markup (think/tool tags)
-            const hasAgentMarkup = message.content && 
+            // Check if message contains agent markup (think/tool tags) - only for assistant messages
+            const hasAgentMarkup = message.role === 'assistant' && message.content && 
               (message.content.includes('<|think|>') || message.content.includes('<|tool|>'))
             
+            // For assistant messages, extract canvas content (displayed in canvas box, not chat)
+            const displayContent = message.role === 'assistant' && message.content
+              ? extractCanvasContent(message.content).content
+              : message.content
+            
             return (
-              <div key={message.clientId || message.id || index} className={`message ${message.role}`}>
-                <div className="message-content">
-                  {message.isLoading ? (
-                    <div className="typing-indicator">
+            <div key={message.clientId || message.id || index} className={`message ${message.role}`}>
+              <div className="message-content">
+                {message.isLoading ? (
+                  <div className="typing-indicator">
                       <div className="skeleton-line"></div>
                       <div className="skeleton-line"></div>
                       <div className="skeleton-line"></div>
@@ -95,19 +100,19 @@ const MessageList = ({ messages, onScrollToBottom }) => {
                           )
                         }}
                       >
-                        {message.content}
+                        {displayContent}
                       </ReactMarkdown>
                       {message.isStreaming && (
                         <span className="inline-loading">
-                          <span></span>
-                          <span></span>
-                          <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
                         </span>
                       )}
                     </>
-                  )}
-                </div>
+                )}
               </div>
+            </div>
             )
           })}
         </>

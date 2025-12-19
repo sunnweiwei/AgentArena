@@ -7,8 +7,10 @@ import fs from 'fs'
 const certPath = '/usr1/data/weiweis/chat_server/certs/server.crt'
 const keyPath = '/usr1/data/weiweis/chat_server/certs/server.key'
 
-// Control HTTPS via env var (default true)
-const enableHttps = process.env.ENABLE_HTTPS !== 'false'
+// Control HTTPS via env var
+// When ENABLE_HTTPS=false, Vite runs on HTTP only
+// HTTPS is handled separately by start_dual_server.js on port 3443
+const enableHttps = process.env.ENABLE_HTTPS === 'true'
 
 const httpsConfig = (() => {
   if (enableHttps && fs.existsSync(certPath) && fs.existsSync(keyPath)) {
@@ -18,7 +20,6 @@ const httpsConfig = (() => {
       key: fs.readFileSync(keyPath)
     }
   }
-  console.log('⚠️  Using HTTP only (HTTPS disabled)')
   return false
 })()
 

@@ -18,9 +18,36 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
     return true
   }) // Desktop open by default, mobile closed
   const [pendingChats, setPendingChats] = useState({})
+  const [sharedChat, setSharedChat] = useState(null) // Shared chat data when viewing via share link
+  const [shareToken, setShareToken] = useState(null) // Share token from URL
   const canUseChat = Boolean(user && user.user_id)
 
+  // Check for share token in URL
   useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search)
+    const share = urlParams.get('share')
+    if (share) {
+      setShareToken(share)
+      // Load shared chat
+      axios.get(`/api/shared/${share}`)
+        .then(response => {
+          setSharedChat(response.data)
+          setCurrentChatId(response.data.id)
+          setLoading(false)
+        })
+        .catch(error => {
+          console.error('Failed to load shared chat:', error)
+          setLoading(false)
+        })
+    }
+  }, [])
+
+  useEffect(() => {
+    // Don't load normal chats if viewing a shared chat
+    if (shareToken) {
+      return
+    }
+    
     if (canUseChat) {
       // Try to restore last selected chat from localStorage
       const savedChatId = localStorage.getItem('lastChatId')
@@ -70,7 +97,7 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
       setChats([])  // Clear chats
       setLoading(false)
     }
-  }, [user])
+  }, [user, shareToken])
 
   const loadChats = async () => {
     if (!user || !user.user_id) {
@@ -190,6 +217,42 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
 
   if (loading) {
     return <div className="loading">Loading...</div>
+  }
+
+  // If viewing shared chat, show read-only view
+  if (shareToken && sharedChat) {
+    return (
+      <div className="chat-interface shared-chat-view">
+        <Sidebar
+          chats={[]}
+          currentChatId={null}
+          pendingChats={{}}
+          onSelectChat={noop}
+          onCreateChat={noop}
+          onLogout={handleLogout}
+          user={user}
+          isOpen={false}
+          onToggle={noop}
+          theme={theme}
+          toggleTheme={toggleTheme}
+          isLocked={true}
+        />
+        <ChatWindow
+          chatId={sharedChat.id}
+          userId={null} // No user ID for shared chat (read-only)
+          sharedChatData={sharedChat} // Pass shared chat data directly
+          onUpdateTitle={noop}
+          onChatUpdate={noop}
+          onCreateChat={noop}
+          user={user}
+          onLogin={onLogin}
+          sidebarOpen={false}
+          onToggleSidebar={noop}
+          onChatPendingStateChange={noop}
+          isSharedView={true}
+        />
+      </div>
+    )
   }
 
   return (

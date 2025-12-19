@@ -1,10 +1,36 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import axios from 'axios'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import MessageList from './MessageList'
 import MessageInput from './MessageInput'
+import { getLastCanvasContent } from './AgentBlock'
 import './ChatWindow.css'
 
 const isDev = import.meta.env.DEV
+
+// Canvas display component - shows the last canvas content from messages
+const CanvasDisplay = ({ messages }) => {
+  const canvasContent = useMemo(() => {
+    return getLastCanvasContent(messages)
+  }, [messages])
+
+  if (!canvasContent) {
+    return (
+      <div className="canvas-empty">
+        <p>Canvas content will appear here</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="canvas-content">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+        {canvasContent}
+      </ReactMarkdown>
+    </div>
+  )
+}
 
 const extractChunkText = (content) => {
   if (!content) return ''
@@ -33,7 +59,9 @@ const ChatWindow = ({
   onLogin,
   sidebarOpen,
   onToggleSidebar,
-  onChatPendingStateChange
+  onChatPendingStateChange,
+  sharedChatData = null,
+  isSharedView = false
 }) => {
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(false)
@@ -41,8 +69,12 @@ const ChatWindow = ({
   const [connectionNotice, setConnectionNotice] = useState('')
   const [selectedModel, setSelectedModel] = useState('Auto')
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false)
+  const [metaInfo, setMetaInfo] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [canvasOpen, setCanvasOpen] = useState(false)
+  const [shareUrl, setShareUrl] = useState(null)
+  const [shareCopied, setShareCopied] = useState(false)
+  const [showShareNotification, setShowShareNotification] = useState(false)
   const [splitRatio, setSplitRatio] = useState(50) // Percentage for left panel
   const [isDragging, setIsDragging] = useState(false)
   const activeStreamIdRef = useRef(null)
@@ -333,6 +365,15 @@ const ChatWindow = ({
           }
         ]
       })
+    } else if (data.type === 'meta_info_update') {
+      // Handle meta info update
+      const infoContent = data.content || ''
+      if (infoContent) {
+        setMetaInfo(prev => prev + infoContent)
+        if (isDev) {
+          console.log('[WS meta_info]', infoContent.slice(0, 100))
+        }
+      }
     } else if (data.type === 'message_chunk') {
       const chunkText = extractChunkText(data.content)
       const streamId = data.stream_id || streamingMessageIdRef.current
@@ -471,19 +512,32 @@ const ChatWindow = ({
       setIsStreaming(false)
       resolvePendingStream(resolvedChatId ?? currentChatId)
       onChatUpdateRef.current?.()
-      fetchMessagesRef.current({ showLoader: false })
+      // Small delay to ensure message is saved to DB before fetching
+      setTimeout(() => {
+        fetchMessagesRef.current({ showLoader: false })
+      }, 500)
     } else if (data.type === 'error') {
       console.error('Server error:', data.message)
       setConnectionNotice(data.message || 'An error occurred')
       const streamId = data.stream_id
+      // Keep the partial response, just mark it as no longer loading
       if (streamId && streamIdToMessageIdRef.current[streamId]) {
         const targetId = streamIdToMessageIdRef.current[streamId]
-        setMessages(prev => prev.filter(m => m.id !== targetId))
+        setMessages(prev => prev.map(m => {
+          if (m.id === targetId) {
+            // Keep content, just stop loading
+            return { ...m, isLoading: false, isOptimistic: false }
+          }
+          return m
+        }))
         delete streamIdToMessageIdRef.current[streamId]
       } else {
-        setMessages(prev => prev.filter(m => !m.isLoading))
+        // Mark all loading messages as done (keep their content)
+        setMessages(prev => prev.map(m => m.isLoading ? { ...m, isLoading: false } : m))
       }
       streamingMessageIdRef.current = null
+      activeStreamIdRef.current = null
+      setIsStreaming(false)
       resolvePendingStream(currentChatId)
       pendingWaitingMessageIdsRef.current = []
     }
@@ -498,7 +552,8 @@ const ChatWindow = ({
     streamingMessageIdRef.current = null
     setMessages([])
 
-    if (!chatId || !userId) {
+    // For shared chats, we don't need userId
+    if (!chatId || (!userId && !isSharedView)) {
       fetchMessagesRef.current = async () => {}
       return
     }
@@ -507,6 +562,27 @@ const ChatWindow = ({
     const requestId = ++requestIdRef.current
 
     const fetchMessages = async ({ showLoader = true } = {}) => {
+      // For shared chats with data already provided, skip loading state
+      if (isSharedView && sharedChatData) {
+        // Use shared chat data directly
+        const uniqueMessages = sharedChatData.messages.reduce((acc, msg) => {
+          if (!acc.some(m => m.id === msg.id)) {
+            acc.push(msg)
+          }
+          return acc
+        }, [])
+        uniqueMessages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+        setMessages((prev) => {
+          const normalized = normalizeMessages(uniqueMessages.map((msg) => ({ ...msg, chatId })), chatId)
+          return normalized
+        })
+        if (sharedChatData.meta_info !== undefined) {
+          setMetaInfo(sharedChatData.meta_info || '')
+        }
+        setLoading(false)
+        return
+      }
+
       if (showLoader) {
         setLoading(true)
       }
@@ -519,12 +595,17 @@ const ChatWindow = ({
           return
         }
 
+        // Update meta_info
+        if (response.data.meta_info !== undefined) {
+          setMetaInfo(response.data.meta_info || '')
+        }
+        
         const uniqueMessages = response.data.messages.reduce((acc, msg) => {
           if (!acc.some(m => m.id === msg.id)) {
             acc.push(msg)
           }
           return acc
-  }, [resolvePendingStream])
+        }, [])
         uniqueMessages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
         setMessages((prev) => {
           const normalized = normalizeMessages(uniqueMessages.map((msg) => ({ ...msg, chatId })), chatId)
@@ -585,9 +666,23 @@ const ChatWindow = ({
     return () => {
       isCurrent = false
     }
-  }, [chatId, userId])
+  }, [chatId, userId, isSharedView, sharedChatData])
 
   useEffect(() => {
+    // For shared chats, we don't need WebSocket connection
+    if (isSharedView) {
+      if (wsRef.current) {
+        try {
+          wsRef.current.close()
+        } catch (err) {
+          console.error('Error closing socket:', err)
+        }
+        wsRef.current = null
+      }
+      setConnected(true) // Mark as "connected" for shared chats (read-only mode)
+      return
+    }
+
     if (!userId) {
       if (wsRef.current) {
         try {
@@ -754,7 +849,8 @@ const ChatWindow = ({
       type: 'message',
       chat_id: chatId,
       content: trimmed,
-      model: selectedModel
+      model: selectedModel,
+      meta_info: metaInfo
     }
 
     const socket = wsRef.current
@@ -790,6 +886,64 @@ const ChatWindow = ({
       activeStreamIdRef.current = null
     }
   }
+
+  const handleShare = useCallback(async () => {
+    if (!chatId || !userId) return
+    
+    try {
+      const response = await axios.post(`/api/chats/${chatId}/share`, null, {
+        params: { user_id: userId }
+      })
+      
+      const url = response.data.share_url
+      setShareUrl(url)
+      
+      // Copy to clipboard with fallback for HTTP
+      try {
+        // Try modern Clipboard API (requires HTTPS)
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(url)
+        } else {
+          // Fallback for HTTP: use execCommand
+          const textArea = document.createElement('textarea')
+          textArea.value = url
+          textArea.style.position = 'fixed'
+          textArea.style.left = '-999999px'
+          textArea.style.top = '-999999px'
+          document.body.appendChild(textArea)
+          textArea.focus()
+          textArea.select()
+          try {
+            document.execCommand('copy')
+            textArea.remove()
+          } catch (err) {
+            textArea.remove()
+            // If both methods fail, show prompt
+            prompt('Copy this share link:', url)
+            return
+          }
+        }
+        setShareCopied(true)
+        setShowShareNotification(true)
+        
+        // Reset copied state after 2 seconds
+        setTimeout(() => {
+          setShareCopied(false)
+        }, 2000)
+        
+        // Hide notification after 3 seconds
+        setTimeout(() => {
+          setShowShareNotification(false)
+        }, 3000)
+      } catch (clipboardError) {
+        // If clipboard fails, show prompt as last resort
+        prompt('Copy this share link:', url)
+      }
+    } catch (error) {
+      console.error('Error sharing chat:', error)
+      setConnectionNotice('Failed to generate share link')
+    }
+  }, [chatId, userId])
 
   const handleMouseDown = useCallback((e) => {
     e.preventDefault()
@@ -1051,6 +1205,21 @@ const ChatWindow = ({
         </button>
         {renderModelSelector()}
         <div className="header-right">
+          {chatId && userId && !isSharedView && (
+            <button 
+              className={`share-button ${shareCopied ? 'copied' : ''}`}
+              onClick={handleShare}
+              title={shareCopied ? 'Link copied!' : 'Share chat'}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="18" cy="5" r="3"></circle>
+                <circle cx="6" cy="12" r="3"></circle>
+                <circle cx="18" cy="19" r="3"></circle>
+                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line>
+                <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>
+              </svg>
+            </button>
+          )}
           <button 
             className={`canvas-toggle-button ${canvasOpen ? 'active' : ''}`}
             onClick={() => setCanvasOpen(!canvasOpen)}
@@ -1065,7 +1234,9 @@ const ChatWindow = ({
             </svg>
           </button>
           <div className="chat-status">
-            {connected ? (
+            {isSharedView ? (
+              <span className="status-indicator shared">● Shared Chat</span>
+            ) : connected ? (
               <span className="status-indicator connected">● Connected</span>
             ) : (
               <span className="status-indicator disconnected">● Connecting...</span>
@@ -1078,6 +1249,11 @@ const ChatWindow = ({
           {connectionNotice && (
             <div className="connection-notice">
               {connectionNotice}
+            </div>
+          )}
+          {showShareNotification && (
+            <div className="share-notification">
+              ✓ Link copied!
             </div>
           )}
           {loading ? (
@@ -1097,17 +1273,17 @@ const ChatWindow = ({
             </div>
             <div className="canvas-panel" style={{ width: `${100 - splitRatio}%` }}>
               <div className="canvas-container">
-                {/* Canvas content will go here */}
+                <CanvasDisplay messages={messages} />
               </div>
             </div>
           </>
         )}
       </div>
       <div className={`message-input-wrapper ${canvasOpen ? 'with-canvas' : ''}`} style={canvasOpen ? { width: `${splitRatio}%` } : {}}>
-        <MessageInput 
-          onSendMessage={sendMessage} 
+        <MessageInput
+          onSendMessage={sendMessage}
           onStopGeneration={stopGeneration}
-          disabled={!chatId} 
+          disabled={!chatId || isSharedView}
           isStreaming={isStreaming} 
         />
       </div>
