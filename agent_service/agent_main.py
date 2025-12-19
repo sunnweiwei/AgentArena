@@ -8,8 +8,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional
-from agent_service.search.search_agent import agent_loop as search_agent_loop
-from agent_service.tau.tau_agent import agent_loop as tau_agent_loop
+from agent_service.search_agent import agent_loop as search_agent_loop
+from agent_service.tau_agent import agent_loop as tau_agent_loop
 import json
 import os
 
@@ -177,17 +177,10 @@ async def chat_completions(request: ChatRequest):
     OpenAI-compatible chat completions endpoint with streaming support.
     """
     conversation = [msg.dict() for msg in request.messages]
-    
-    # Debug logging
-    if conversation and len(conversation) > 0:
-        first_msg = conversation[0]
-
     if conversation[0]['role'] == 'user' and conversation[0]['content'].startswith('\\tau'):
         selected_agent_loop = tau_agent_loop
-        print(f"[DEBUG] Selected: tau_agent_loop")
     else:
         selected_agent_loop = search_agent_loop
-        print(f"[DEBUG] Selected: search_agent_loop")
     if request.stream:
         return StreamingResponse(
             generate_stream(conversation, selected_agent_loop, request.meta_info),
@@ -198,50 +191,25 @@ async def chat_completions(request: ChatRequest):
         import threading
         cancel_event = threading.Event()
         full_response = ""
-        try:
-            for chunk in selected_agent_loop(conversation, cancel_event, request.meta_info):
-                # Only accumulate string chunks, skip info dicts
-                if isinstance(chunk, str):
-                    full_response += chunk
-        except Exception as e:
-            print(f"Error in non-streaming agent_loop: {e}")
-            import traceback
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(e))
-
-        return {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": full_response
-                },
-                "index": 0,
-                "finish_reason": "stop"
-            }]
-        }
+        for chunk in selected_agent_loop(conversation, cancel_event, request.meta_info):
+            # Only accumulate string chunks, skip info dicts
+            if isinstance(chunk, str):
+                full_response += chunk
+        return {"choices": [{"message": {"role": "assistant", "content": full_response}, "index": 0,
+                             "finish_reason": "stop"}]}
 
 
 @app.get("/health")
 async def health():
-    """Health check endpoint"""
-    return {
-        "status": "healthy",
-    }
+    return {"status": "healthy"}
 
 
 @app.get("/")
 async def root():
-    return {
-        "message": "Search Agent Server",
-        "version": "1.0.0",
-        "endpoints": {
-            "chat": "/v1/chat/completions",
-            "health": "/health"
-        }
-    }
+    return {"message": "Agent Server", "version": "1.0.0",
+            "endpoints": {"chat": "/v1/chat/completions", "health": "/health"}}
 
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=8001)

@@ -256,18 +256,22 @@ class RuntimeManager:
 
     def stop(self, runtime_id: str) -> bool:
         """
-        Stop and cleanup environment.
+        Stop and cleanup environment using env-specific close function.
         No lock needed - dict operations are atomic in CPython (GIL).
         """
         if runtime_id not in self.environments:
             return False
 
-        # Get environment
+        # Get environment and module
         env_data = self.environments[runtime_id]
         env = env_data['env']
+        env_module = env_data.get('env_module')
 
-        # Cleanup if env has close method
-        if hasattr(env, 'close'):
+        # Try to use env_module's close_env function first
+        if env_module and hasattr(env_module, 'close_env'):
+            env_module.close_env(env)
+        # Otherwise fall back to env.close() if available
+        elif hasattr(env, 'close'):
             env.close()
 
         # Remove from storage (atomic operation in CPython)
@@ -315,7 +319,7 @@ class RuntimeManager:
                 print(f"Error in cleanup task: {e}")
 
     async def cleanup_all(self):
-        """Cleanup all environments"""
+        """Cleanup all environments using env-specific close functions"""
         def _cleanup_blocking():
             # Get snapshot of runtime_ids to avoid iteration issues
             runtime_ids = list(self.environments.keys())
@@ -323,7 +327,12 @@ class RuntimeManager:
                 env_data = self.environments.get(runtime_id)
                 if env_data:
                     env = env_data['env']
-                    if hasattr(env, 'close'):
+                    env_module = env_data.get('env_module')
+                    # Try to use env_module's close_env function first
+                    if env_module and hasattr(env_module, 'close_env'):
+                        env_module.close_env(env)
+                    # Otherwise fall back to env.close() if available
+                    elif hasattr(env, 'close'):
                         env.close()
             # Clear all at once
             self.environments.clear()

@@ -6,36 +6,6 @@ import json
 meta_info = "Tau-bench environment for airline and retail customer service tasks"
 
 
-def create_env(env_name='airline', task_index=None):
-    env = get_env(
-        env_name,
-        user_strategy='llm',
-        user_model='gpt-4o',
-        task_split='test',
-        user_provider='openai',
-        task_index=task_index,
-    )
-
-    # If task_index is None, don't pass it to reset() - let tau-bench pick randomly
-    if task_index is not None:
-        initial = env.reset(task_index=task_index)
-    else:
-        initial = env.reset()
-    
-    initial_question = initial.observation
-    tools_info = env.tools_info
-    wiki = env.wiki
-    instruction = env.task.instruction
-    actual_task_index = env.task_index
-    return env, json.dumps({'initial_question': initial_question,
-                            'tools_info': tools_info,
-                            'wiki': wiki,
-                            'instruction': instruction,
-                            'task_index': actual_task_index,
-                            'env_name': env_name
-                            })
-
-
 def convert_value_to_type(value, expected_type):
     """
     Convert a value to the expected type based on type hints.
@@ -129,6 +99,36 @@ def convert_arguments_by_schema(function_name, arguments, tools_info):
     return converted_args
 
 
+def create_env(env_name='airline', task_index=None):
+    env = get_env(
+        env_name,
+        user_strategy='llm',
+        user_model='gpt-4o',
+        task_split='test',
+        user_provider='openai',
+        task_index=task_index,
+    )
+
+    # If task_index is None, don't pass it to reset() - let tau-bench pick randomly
+    if task_index is not None:
+        initial = env.reset(task_index=task_index)
+    else:
+        initial = env.reset()
+
+    initial_question = initial.observation
+    tools_info = env.tools_info
+    wiki = env.wiki
+    instruction = env.task.instruction
+    actual_task_index = env.task_index
+    return env, json.dumps({'initial_question': initial_question,
+                            'tools_info': tools_info,
+                            'wiki': wiki,
+                            'instruction': instruction,
+                            'task_index': actual_task_index,
+                            'env_name': env_name
+                            })
+
+
 def env_step(env, fn_call: dict):
     """
     Execute a step in the environment with automatic type conversion based on function schema.
@@ -151,3 +151,7 @@ def env_step(env, fn_call: dict):
 def get_reward(env, **kwargs):
     reward = env.calculate_reward()
     return reward.reward
+
+
+def close_env(env):
+    return

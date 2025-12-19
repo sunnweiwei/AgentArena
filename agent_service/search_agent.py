@@ -5,7 +5,7 @@ import os
 from openai import OpenAI
 from tavily import TavilyClient
 
-from agent_service.tools.tool_prompt import convert_tools_to_description, TOOL_PROMPT
+from agent_service.tool_prompt import convert_tools_to_description, TOOL_PROMPT
 
 # Load API keys
 OPENAI_API_KEY = None
@@ -186,26 +186,12 @@ def extract_fn_call(text):
 
 
 def agent_loop(conversation, cancel_event=None, meta_info=""):
-    """
-    Search agent loop that yields chunks as they're generated.
-    Compatible with OpenAI streaming format.
-
-    Args:
-        conversation: The conversation history
-        cancel_event: Optional threading.Event to signal cancellation
-        meta_info: Meta information for agent context (string)
-    
-    Yields:
-        Either a string (content chunk) or a dict with 'info' key (meta info update)
-    """
-    import re
     def is_cancelled():
         return cancel_event is not None and cancel_event.is_set()
     
     # Yield initial meta_info if provided
     if meta_info:
         print(f"[agent_loop] Starting with meta_info: {meta_info[:100]}...")
-        # Meta info is available but we don't yield it at start, just use it as context
 
     if isinstance(conversation, str):
         conversation = [{'role': 'system', 'content': ''}, {'role': 'user', 'content': conversation}]
@@ -274,7 +260,7 @@ def agent_loop(conversation, cancel_event=None, meta_info=""):
         response = openai_client.responses.create(
             model='gpt-5-mini',
             input=chat,
-            reasoning={'summary': 'detailed'}
+            reasoning={'summary': 'detailed', "effort": "low"}
         )
 
         # Check for cancellation after API call
