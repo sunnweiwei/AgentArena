@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, UploadFile, File
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
@@ -11,6 +11,7 @@ import asyncio
 import os
 import time
 import tempfile
+import secrets
 from openai import OpenAI
 import aiohttp
 import json
@@ -44,10 +45,14 @@ class Chat(Base):
     id = Column(String, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     title = Column(String)
+    meta_info = Column(Text, default="")  # Meta information for agent context
+    share_token = Column(String, unique=True, index=True, nullable=True)  # Token for sharing chat (nullable for existing chats)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     user = relationship("User", back_populates="chats")
     messages = relationship("Message", back_populates="chat", order_by="Message.created_at")
+    # Note: For existing databases, SQLite will automatically add the nullable share_token column
+    # when the table schema is updated. No manual migration needed.
 
 class Message(Base):
     __tablename__ = "messages"
@@ -97,7 +102,7 @@ MODEL_MAP = {
 
 # External API configuration for models
 EXTERNAL_MODEL_APIS = {
-    "search_agent": os.getenv("SEARCH_AGENT_URL", "http://localhost:8001")
+    "search_agent": os.getenv("SEARCH_AGENT_URL", "http://sf.lti.cs.cmu.edu:8001")
 }
 
 
@@ -175,18 +180,32 @@ def _extract_error_from_response_event(event):
 app = FastAPI()
 
 # CORS middleware
-allowed_origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://sf.lti.cs.cmu.edu:3000",
-    "http://sf.lti.cs.cmu.edu",
-    "http://localhost:4173"
-]
+# Allow all origins for cloud hosting (frontend may be on different server)
+# Can be restricted by setting ALLOWED_ORIGINS env var (comma-separated list)
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS")
+if allowed_origins_env:
+    allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
+    allow_credentials = True
+else:
+    # Default: allow common origins + all origins for cloud hosting
+    # Note: Using "*" requires allow_credentials=False, so we allow all with regex
+    allowed_origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://sf.lti.cs.cmu.edu:3000",
+        "https://sf.lti.cs.cmu.edu:3443",
+        "http://sf.lti.cs.cmu.edu",
+        "https://sf.lti.cs.cmu.edu",
+        "http://localhost:4173"
+    ]
+    # For cloud hosting: allow all origins (frontend on different server)
+    # Set ALLOWED_ORIGINS env var to restrict to specific origins if needed
+    allow_credentials = False  # Required when allowing all origins
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
+    allow_origins=allowed_origins if allowed_origins_env else ["*"],
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -399,6 +418,7 @@ async def get_chat(chat_id: str, user_id: int, db: Session = Depends(get_db)):
     return {
         "id": chat.id,
         "title": chat.title,
+        "meta_info": chat.meta_info or "",
         "created_at": chat.created_at.isoformat(),
         "updated_at": chat.updated_at.isoformat(),
         "messages": [
@@ -423,6 +443,60 @@ async def update_chat_title(chat_id: str, title: str, user_id: int, db: Session 
     chat.updated_at = datetime.utcnow()
     db.commit()
     return {"message": "Title updated"}
+
+@app.post("/api/chats/{chat_id}/share")
+async def share_chat(chat_id: str, user_id: int, request: Request, db: Session = Depends(get_db)):
+    """Generate a share token for a chat"""
+    chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    
+    # Generate a unique share token if not exists
+    if not chat.share_token:
+        # Generate a secure random token
+        chat.share_token = secrets.token_urlsafe(32)
+        db.commit()
+    
+    # Get base URL from request
+    scheme = request.url.scheme
+    host = request.headers.get("host", "localhost:5173")
+    # Try to get origin from headers (set by frontend proxy)
+    origin = request.headers.get("origin") or request.headers.get("referer")
+    if origin:
+        base_url = origin.rstrip('/')
+    else:
+        base_url = f"{scheme}://{host}"
+    
+    share_url = f"{base_url}?share={chat.share_token}"
+    
+    return {
+        "share_token": chat.share_token,
+        "share_url": share_url
+    }
+
+@app.get("/api/shared/{share_token}")
+async def get_shared_chat(share_token: str, db: Session = Depends(get_db)):
+    """Get a shared chat by share token (public endpoint, no auth required)"""
+    chat = db.query(Chat).filter(Chat.share_token == share_token).first()
+    if not chat:
+        raise HTTPException(status_code=404, detail="Shared chat not found")
+    
+    return {
+        "id": chat.id,
+        "title": chat.title,
+        "meta_info": chat.meta_info or "",
+        "created_at": chat.created_at.isoformat(),
+        "updated_at": chat.updated_at.isoformat(),
+        "messages": [
+            {
+                "id": msg.id,
+                "role": msg.role,
+                "content": msg.content,
+                "created_at": msg.created_at.isoformat()
+            }
+            for msg in chat.messages
+        ]
+    }
 
 @app.post("/api/chats/{chat_id}/messages")
 async def add_message(chat_id: str, content: str, role: str, user_id: int, db: Session = Depends(get_db)):
@@ -562,6 +636,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     chat_id = data.get("chat_id")
                     content = data.get("content", "").strip()
                     model = data.get("model", "Auto")
+                    meta_info = data.get("meta_info", "")
 
                     if not chat_id:
                         await manager.send_personal_message({
@@ -582,6 +657,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         chat_id=chat_id,
                         content=content,
                         model=model,
+                        meta_info=meta_info,
                         stream_id=stream_id,
                         cancelled_streams=cancelled_streams
                     ))
@@ -651,7 +727,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             pass
 
 
-async def call_external_model_api(api_url: str, messages_history: list, websocket: WebSocket, chat_id: str, user_id: int, stream_id: str, cancelled_streams: set = None):
+async def call_external_model_api(api_url: str, messages_history: list, websocket: WebSocket, chat_id: str, user_id: int, stream_id: str, meta_info: str = "", cancelled_streams: set = None):
     """
     Generic function to call any external model API with OpenAI-compatible streaming.
     Handles streaming response from external API servers.
@@ -663,6 +739,7 @@ async def call_external_model_api(api_url: str, messages_history: list, websocke
         chat_id: Chat identifier
         user_id: User identifier
         stream_id: Stream identifier
+        meta_info: Meta information for agent context
         cancelled_streams: Set of cancelled stream IDs
     """
     full_response = ""
@@ -674,7 +751,8 @@ async def call_external_model_api(api_url: str, messages_history: list, websocke
         # Prepare request (OpenAI-compatible format)
         request_payload = {
             "messages": messages_history,
-            "stream": True
+            "stream": True,
+            "meta_info": meta_info
         }
         
         # Call external API with streaming
@@ -682,7 +760,7 @@ async def call_external_model_api(api_url: str, messages_history: list, websocke
             async with session.post(
                 f"{api_url}/v1/chat/completions",
                 json=request_payload,
-                timeout=aiohttp.ClientTimeout(total=300)  # 5 minute timeout
+                timeout=aiohttp.ClientTimeout(total=7200)  # 2 hour timeout for long agent tasks
             ) as response:
                 if response.status != 200:
                     error_text = await response.text()
@@ -705,6 +783,38 @@ async def call_external_model_api(api_url: str, messages_history: list, websocke
                         line = line_bytes.decode('utf-8').strip()
                         
                         if not line or line.startswith(':'):
+                            continue
+                        
+                        if line.startswith('info: '):
+                            # Handle meta info update
+                            info_str = line[6:]  # Remove 'info: ' prefix
+                            try:
+                                info_content = info_str
+                                
+                                if info_content:
+                                    print(f"[External API] Info update: {info_content[:100]}...")
+                                    
+                                    # Update meta_info in database
+                                    with SessionLocal() as db:
+                                        chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+                                        if chat:
+                                            current_meta = chat.meta_info or ""
+                                            if len(current_meta) != 0:
+                                                chat.meta_info = current_meta + "\n\n" + info_content
+                                            else:
+                                                chat.meta_info = current_meta + info_content
+                                            db.commit()
+                                    
+                                    # Send info update to client
+                                    await manager.send_personal_message({
+                                        "type": "meta_info_update",
+                                        "content": info_content,
+                                        "stream_id": stream_id,
+                                        "chat_id": chat_id
+                                    }, websocket)
+                            
+                            except json.JSONDecodeError:
+                                print(f"Failed to parse info JSON: {info_str}")
                             continue
                         
                         if line.startswith('data: '):
@@ -838,31 +948,41 @@ async def call_external_model_api(api_url: str, messages_history: list, websocke
         if full_response.strip():
             # Append a short note to the end of the model output so the user
             # sees the incomplete answer first, then the error notice.
-            # Extract a meaningful short error message
             short_msg = error_msg
             if len(short_msg) > 300:
                 short_msg = short_msg[:300] + "..."
             
-            # Add a clear note at the end
             response_with_note = (
                 full_response
                 + f"\n\n---\n⚠️ **Response incomplete**: {short_msg}"
             )
             try:
-                # DO NOT send error event here - it causes frontend to delete the message!
-                # Just send message_complete with the content + error note
-                await manager.send_personal_message({
-                    "type": "message_complete",
-                    "id": None,
-                    "role": "assistant",
-                    "content": response_with_note,
-                    "created_at": datetime.utcnow().isoformat(),
-                    "stream_id": stream_id,
-                    "chat_id": chat_id
-                }, websocket)
+                # Save the message to database FIRST, then send with proper ID
+                with SessionLocal() as db:
+                    chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+                    if chat:
+                        message = Message(
+                            chat_id=chat_id,
+                            role="assistant",
+                            content=response_with_note,
+                            created_at=datetime.utcnow()
+                        )
+                        db.add(message)
+                        chat.updated_at = datetime.utcnow()
+                        db.commit()
+                        db.refresh(message)
+                        
+                        await manager.send_personal_message({
+                            "type": "message_complete",
+                            "id": message.id,
+                            "role": "assistant",
+                            "content": response_with_note,
+                            "created_at": message.created_at.isoformat(),
+                            "stream_id": stream_id,
+                            "chat_id": chat_id
+                        }, websocket)
             except Exception as send_err:
-                # Log but do not re-raise to avoid masking the original error
-                print(f"Error sending partial external response: {send_err}")
+                print(f"Error saving/sending partial external response: {send_err}")
             return full_response
 
         # No content at all – behave like a hard failure
@@ -872,19 +992,10 @@ async def call_external_model_api(api_url: str, messages_history: list, websocke
             "stream_id": stream_id,
             "chat_id": chat_id
         }, websocket)
-        # Also send message_complete to close the streaming message
-        await manager.send_personal_message({
-            "type": "message_complete",
-            "id": None,
-            "role": "assistant",
-            "content": f"Error: {error_msg}",
-            "created_at": datetime.utcnow().isoformat(),
-            "chat_id": chat_id
-        }, websocket)
         return ""
 
 
-async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, content: str, model: str, stream_id: str = None, cancelled_streams: set = None):
+async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, content: str, model: str, meta_info: str = "", stream_id: str = None, cancelled_streams: set = None):
     user_payload = None
     stream_id = stream_id or str(uuid.uuid4())
     cancelled_streams = cancelled_streams or set()
@@ -958,11 +1069,10 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
                     }, websocket)
                     return
                 
-                # Build message history
+                # Build message history (user message already in chat.messages after commit)
                 messages_history = []
-                for msg in chat.messages[-20:]:  # Last 20 messages for context
+                for msg in chat.messages:
                     messages_history.append({"role": msg.role, "content": msg.content})
-                messages_history.append({"role": "user", "content": content})
             
             # Start streaming response
             start_time = time.time()
@@ -974,8 +1084,11 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
                 "chat_id": chat_id
             }, websocket)
             
+            # Get meta_info from chat
+            chat_meta_info = chat.meta_info or ""
+            
             # Stream response from external API
-            await call_external_model_api(external_api_url, messages_history, websocket, chat_id, user_id, stream_id, cancelled_streams)
+            await call_external_model_api(external_api_url, messages_history, websocket, chat_id, user_id, stream_id, chat_meta_info, cancelled_streams)
             
         elif openai_model is None or openai_client is None:
             # Use simulated response for Auto or if OpenAI not available
@@ -1018,7 +1131,7 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
                     }, websocket)
                     return
                 
-                # Build message history with system prompt
+                # Build message history with system prompt (user message already in chat.messages after commit)
                 messages_history = [
                     {
                         "role": "system",
@@ -1027,9 +1140,8 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
                 ]
                 messages_history.extend([
                     {"role": msg.role, "content": msg.content}
-                    for msg in chat.messages[-500:]  # Last 500 messages for context
+                    for msg in chat.messages
                 ])
-                messages_history.append({"role": "user", "content": content})
 
             # Start streaming response (use provided stream_id)
             start_time = time.time()

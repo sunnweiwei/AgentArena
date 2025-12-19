@@ -434,6 +434,7 @@ multiple lines
 <IMPORTANT>
 Reminder:
 - Function calls MUST follow the specified format, start with <function= and end with </function>
+- Parameters must be wrapped with <parameter=key>value</parameter>
 - Required parameters MUST be specified
 - Only call one function at a time
 - You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after.
