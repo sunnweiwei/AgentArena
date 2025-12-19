@@ -2,6 +2,12 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import fs from 'fs'
 
+// Backend URL - defaults to sf.lti.cs.cmu.edu for cloud hosting
+// Frontend can be hosted separately, backend stays on sf.lti.cs.cmu.edu
+// Can be overridden with BACKEND_URL environment variable
+const BACKEND_URL = process.env.BACKEND_URL || 'http://sf.lti.cs.cmu.edu:8000'
+const BACKEND_WS_URL = process.env.BACKEND_WS_URL || 'ws://sf.lti.cs.cmu.edu:8000'
+
 // Check if SSL certificates exist (for HTTPS)
 // Use absolute path to avoid __dirname issues in ES modules
 const certPath = '/usr1/data/weiweis/chat_server/certs/server.crt'
@@ -36,12 +42,16 @@ export default defineConfig({
     ],
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        // Backend URL - points to sf.lti.cs.cmu.edu:8000 for cloud hosting
+        // Frontend can be hosted separately, backend stays on sf.lti.cs.cmu.edu
+        target: BACKEND_URL,
         changeOrigin: true,
         secure: false,
       },
       '/ws': {
-        target: 'ws://localhost:8000',
+        // Backend WebSocket URL - points to sf.lti.cs.cmu.edu:8000 for cloud hosting
+        // Frontend can be hosted separately, backend stays on sf.lti.cs.cmu.edu
+        target: BACKEND_WS_URL,
         ws: true,
         changeOrigin: true,
         secure: false,
