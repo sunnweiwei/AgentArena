@@ -1,0 +1,4 @@
+# MCP (Model Context Protocol) Dependencies
+# Install with: pip install -r mcp_requirements.txt
+
+mcp>=0.9.0
