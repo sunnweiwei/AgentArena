@@ -9,7 +9,7 @@ from tavily import TavilyClient
 from tool_prompt import convert_tools_to_description, TOOL_PROMPT
 
 # Runtime service configuration
-RUNTIME_SERVICE_URL = os.getenv("RUNTIME_SERVICE_URL", "http://sf.lti.cs.cmu.edu:8005")
+RUNTIME_SERVICE_URL = os.getenv("RUNTIME_SERVICE_URL", "http://localhost:8005")
 
 # Load API keys
 OPENAI_API_KEY = None

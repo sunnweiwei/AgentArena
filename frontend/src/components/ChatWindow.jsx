@@ -700,12 +700,19 @@ const ChatWindow = ({
 
     const connectSocket = () => {
       if (!isAlive) return
-      // Use relative path for WebSocket to go through Vite proxy
-      // The proxy will forward /ws to the backend WebSocket server
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const wsHost = window.location.host
-      // Use relative path so Vite proxy handles it
-      const wsUrl = `${wsProtocol}//${wsHost}/ws/${userId}`
+      // Check for direct backend WebSocket URL from environment variable
+      const backendWsUrl = import.meta.env.VITE_BACKEND_WS_URL
+      let wsUrl
+      if (backendWsUrl) {
+        // Use direct backend connection (bypasses Vite proxy)
+        wsUrl = `${backendWsUrl}/ws/${userId}`
+      } else {
+        // Use relative path for WebSocket to go through Vite proxy
+        // The proxy will forward /ws to the backend WebSocket server
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const wsHost = window.location.host
+        wsUrl = `${wsProtocol}//${wsHost}/ws/${userId}`
+      }
       const socket = new WebSocket(wsUrl)
       wsRef.current = socket
       console.log('Opening WebSocket:', wsUrl)

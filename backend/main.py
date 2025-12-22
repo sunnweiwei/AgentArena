@@ -97,20 +97,9 @@ class UserTool(Base):
 # Create tables
 Base.metadata.create_all(bind=engine)
 
-# Load OpenAI API key
-OPENAI_API_KEY = None
-try:
-    # Try relative to backend directory first
-    key_path = os.path.join(os.path.dirname(__file__), '..', 'openaikey')
-    if os.path.exists(key_path):
-        with open(key_path, 'r') as f:
-            OPENAI_API_KEY = f.read().strip()
-    else:
-        # Try absolute path
-        with open('/usr1/data/weiweis/chat_server/openaikey', 'r') as f:
-            OPENAI_API_KEY = f.read().strip()
-except Exception as e:
-    print(f"Warning: Could not load OpenAI API key: {e}")
+# Load OpenAI API key from environment variable
+# Loaded via: 1) uv run --env-file=.env, or 2) load_dotenv() (python-dotenv)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Initialize OpenAI client
 openai_client = None
@@ -384,34 +373,40 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
 @app.get("/api/chats")
 async def get_user_chats(user_id: int, db: Session = Depends(get_db)):
     """Get all chats for a user (only chats with messages), sorted by last user message time"""
-    chats = db.query(Chat).filter(Chat.user_id == user_id).all()
-    # Filter out empty chats and sort by last user message time
-    chats_with_messages = [chat for chat in chats if len(chat.messages) > 0]
-    
-    # Sort by last user message time (most recent first)
-    def get_last_user_message_time(chat):
-        user_messages = [msg for msg in chat.messages if msg.role == "user"]
-        if user_messages:
-            return max(msg.created_at for msg in user_messages)
-        # Fallback to updated_at if no user messages (shouldn't happen)
-        return chat.updated_at
-    
-    chats_with_messages.sort(key=get_last_user_message_time, reverse=True)
-    
-    return [
-        {
-            "id": chat.id,
-            "title": chat.title,
-            "created_at": chat.created_at.isoformat(),
-            "updated_at": chat.updated_at.isoformat(),
-            "message_count": len(chat.messages),
-            "last_user_message_time": max(
-                (msg.created_at for msg in chat.messages if msg.role == "user"),
-                default=chat.updated_at
-            ).isoformat()
-        }
-        for chat in chats_with_messages
-    ]
+    try:
+        chats = db.query(Chat).filter(Chat.user_id == user_id).all()
+        # Filter out empty chats and sort by last user message time
+        chats_with_messages = [chat for chat in chats if len(chat.messages) > 0]
+        
+        # Sort by last user message time (most recent first)
+        def get_last_user_message_time(chat):
+            user_messages = [msg for msg in chat.messages if msg.role == "user"]
+            if user_messages:
+                return max(msg.created_at for msg in user_messages)
+            # Fallback to updated_at if no user messages (shouldn't happen)
+            return chat.updated_at
+        
+        chats_with_messages.sort(key=get_last_user_message_time, reverse=True)
+        
+        return [
+            {
+                "id": chat.id,
+                "title": chat.title,
+                "created_at": chat.created_at.isoformat(),
+                "updated_at": chat.updated_at.isoformat(),
+                "message_count": len(chat.messages),
+                "last_user_message_time": max(
+                    (msg.created_at for msg in chat.messages if msg.role == "user"),
+                    default=chat.updated_at
+                ).isoformat()
+            }
+            for chat in chats_with_messages
+        ]
+    except Exception as e:
+        import traceback
+        print(f"Error in get_user_chats: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/api/chats")
 async def create_chat(user_id: int, db: Session = Depends(get_db)):

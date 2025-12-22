@@ -1,9 +1,14 @@
 import re
 import os
 from tavily import TavilyClient
-from mcp_manager import mcp_manager
 from tool_prompt import extract_fn_call
 import asyncio
+
+# Optional MCP manager import
+try:
+    from mcp_manager import mcp_manager
+except ImportError:
+    mcp_manager = None
 
 
 def keep_first_n_words(text: str, n: int = 1000) -> str:
@@ -80,6 +85,9 @@ class ToolHandler:
     def mcp(self, fn):
         name = fn['function']
         observation = ""
+        if mcp_manager is None:
+            observation += f'[Error] MCP manager not available. Cannot call tool {name}.\n'
+            return observation
         try:
             server_id, server_config = self.mcp_tool_map[name]
             loop = asyncio.new_event_loop()

@@ -1,0 +1,15 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "fastapi==0.104.1",
+    "openai>=2.8.0",
+    "python-dotenv>=1.0.0",
+    "python-multipart==0.0.6",
+    "sqlalchemy==2.0.45",
+    "uvicorn[standard]==0.24.0",
+    "websockets==12.0",
+]
