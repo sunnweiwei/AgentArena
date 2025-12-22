@@ -1,246 +1,220 @@
-import uvicorn
-import json
-import asyncio
-import time
-import shutil
+"""
+Search Agent Server
+Provides a streaming API for the search agent that's compatible with OpenAI's streaming format.
+"""
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any, AsyncGenerator
-import uuid
+from typing import List, Dict, Optional, Any
+from search_agent import agent_loop as search_agent_loop
+from tau_agent import agent_loop as tau_agent_loop
+import json
 import os
 
-from config import settings
-from utils.path_mapper import PathMapper
-from agent.trae_wrapper import TraeAgentWrapper
+app = FastAPI(title="Search Agent Server")
 
-app = FastAPI(title="Coding Agent Service")
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# In-memory session storage with metadata
-# Format: {session_id: {agent, path_mapper, history, created_at, last_accessed}}
-sessions: Dict[str, Dict[str, Any]] = {}
+class Message(BaseModel):
+    role: str
+    content: str
 
-# Session configuration
-SESSION_TIMEOUT_SECONDS = 3600  # 1 hour
-SESSION_CLEANUP_INTERVAL = 300  # Check every 5 minutes
 
-class CreateSessionRequest(BaseModel):
-    pass
+class ChatRequest(BaseModel):
+    messages: List[Message]
+    stream: bool = True
+    meta_info: str = ""
+    user_id: Optional[int] = None
+    mcp_servers: Optional[List[Dict]] = None
+    enabled_tools: Optional[Dict[str, bool]] = None  # tool_name -> enabled
+    model: str = "Auto"  # Model name selected by user
 
-class CreateSessionResponse(BaseModel):
-    session_id: str
-    workspace_path: str
-
-class PromptRequest(BaseModel):
-    prompt: str
-    history: Optional[List[Dict[str, Any]]] = None
-    stream: Optional[bool] = False
-
-class PromptResponse(BaseModel):
-    response: str
-    history: List[Dict[str, Any]]
-
-async def cleanup_session(session_id: str):
-    """Clean up a single session's resources."""
-    if session_id in sessions:
-        session = sessions[session_id]
-
-        # Cleanup agent resources
-        agent = session.get("agent")
-        if agent and hasattr(agent, 'cleanup'):
-            try:
-                await agent.cleanup()
-            except Exception as e:
-                print(f"Error cleaning up agent for session {session_id}: {e}")
-
-        # Remove workspace directory
-        path_mapper = session.get("path_mapper")
-        if path_mapper:
-            try:
-                workspace_path = path_mapper.session_workspace
-                if workspace_path.exists():
-                    shutil.rmtree(workspace_path, ignore_errors=True)
-            except Exception as e:
-                print(f"Error removing workspace for session {session_id}: {e}")
-
-        # Remove from sessions dict
-        del sessions[session_id]
-
-async def cleanup_expired_sessions():
-    """Remove sessions that have exceeded the timeout."""
-    current_time = time.time()
-    expired_sessions = []
-
-    for session_id, session in sessions.items():
-        last_accessed = session.get("last_accessed", session.get("created_at", 0))
-        if current_time - last_accessed > SESSION_TIMEOUT_SECONDS:
-            expired_sessions.append(session_id)
-
-    for session_id in expired_sessions:
-        print(f"Cleaning up expired session: {session_id}")
-        await cleanup_session(session_id)
-
-@app.on_event("startup")
-async def startup_event():
-    """Start background task for session cleanup."""
-    async def cleanup_loop():
-        while True:
-            await asyncio.sleep(SESSION_CLEANUP_INTERVAL)
-            await cleanup_expired_sessions()
-
-    asyncio.create_task(cleanup_loop())
-
-@app.post("/sessions", response_model=CreateSessionResponse)
-async def create_session():
-    session_id = str(uuid.uuid4())
-    path_mapper = PathMapper(session_id, settings.WORKSPACE_ROOT)
-    path_mapper.ensure_workspace_exists()
-
-    agent = TraeAgentWrapper(path_mapper)
-
-    current_time = time.time()
-    sessions[session_id] = {
-        "agent": agent,
-        "path_mapper": path_mapper,
-        "history": [],
-        "created_at": current_time,
-        "last_accessed": current_time
-    }
-
-    return CreateSessionResponse(
-        session_id=session_id,
-        workspace_path=str(path_mapper.session_workspace)
-    )
-
-async def stream_agent_events(session_id: str, prompt: str, history: List[Dict[str, Any]]) -> AsyncGenerator[str, None]:
+async def generate_stream(messages: List[Dict[str, str]], agent_loop, meta_info: str = "", user_id: Optional[int] = None, mcp_servers: Optional[List[Dict]] = None, enabled_tools: Optional[Dict[str, bool]] = None, model: str = "Auto"):
     """
-    Stream agent execution events (actions and observations).
-    Yields SSE-formatted events compatible with OpenAI streaming API.
+    Generate streaming response in OpenAI-compatible format.
+    Yields Server-Sent Events (SSE) format.
+    Supports cancellation when client disconnects.
     """
-    session = sessions[session_id]
-    agent = session["agent"]
+    import asyncio
+    import threading
+    import queue
 
-    # Make a copy of history to avoid mutation issues during streaming
-    working_history = history.copy()
+    # Create a cancel event for the agent loop
+    cancel_event = threading.Event()
+    chunk_queue = queue.Queue()
+    error_holder = [None]  # Mutable to capture errors from thread
 
-    # Add user message to working history
-    working_history.append({"role": "user", "content": prompt})
+    def run_agent_loop():
+        """Run the agent loop in a separate thread and put chunks in queue"""
+        try:
+            import sys
+            print(f"[run_agent_loop] Starting agent loop with agent: {agent_loop.__name__}")
+            print(f"[run_agent_loop] enabled_tools passed to agent_loop: {enabled_tools}")
+            sys.stdout.flush()
+            conversation = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+            print(f"[run_agent_loop] Calling agent_loop with conversation: {conversation[:1]}")
+            sys.stdout.flush()
+            for chunk in agent_loop(conversation, cancel_event, meta_info, user_id, mcp_servers, enabled_tools, model):
+                if cancel_event.is_set():
+                    print("[run_agent_loop] Cancel detected, stopping")
+                    sys.stdout.flush()
+                    break
+                if chunk:
+                    print(f"[run_agent_loop] Received chunk type: {type(chunk)}, is_dict: {isinstance(chunk, dict)}")
+                    sys.stdout.flush()
+                    # Check if chunk is a dict (info) or string (content)
+                    if isinstance(chunk, dict) and 'info' in chunk:
+                        chunk_queue.put(("info", chunk['info']))
+                    else:
+                        chunk_queue.put(("chunk", chunk))
+            print("[run_agent_loop] Agent loop completed, sending done")
+            sys.stdout.flush()
+            chunk_queue.put(("done", None))
+        except Exception as e:
+            import traceback
+            print(f"[run_agent_loop] EXCEPTION: {e}")
+            sys.stdout.flush()
+            traceback.print_exc()
+            error_holder[0] = e
+            chunk_queue.put(("error", str(e)))
 
-    # Track if we successfully got a final response
-    final_response_content = None
-    stream_completed = False
+    # Start agent loop in background thread
+    agent_thread = threading.Thread(target=run_agent_loop, daemon=True)
+    agent_thread.start()
 
     try:
-        # Stream events from agent execution
-        async for event in agent.process_message_stream(working_history):
-            event_type = event.get("type")
+        while True:
+            try:
+                # Use asyncio to check queue with timeout, allowing cancellation
+                event_type, data = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: chunk_queue.get(timeout=0.5)
+                )
+            except queue.Empty:
+                # No data yet, yield control and check again
+                await asyncio.sleep(0)
+                continue
 
-            if event_type == "action":
-                # Agent is taking an action (e.g., calling a tool)
-                chunk = {
-                    "type": "action",
-                    "action": event.get("action"),
-                    "tool": event.get("tool"),
-                    "arguments": event.get("arguments"),
-                    "reasoning": event.get("reasoning", "")
-                }
-                yield f"data: {json.dumps(chunk)}\n\n"
-
-            elif event_type == "observation":
-                # Agent received observation from tool execution
-                chunk = {
-                    "type": "observation",
-                    "tool": event.get("tool"),
-                    "result": event.get("result"),
-                    "success": event.get("success", True)
-                }
-                yield f"data: {json.dumps(chunk)}\n\n"
-
-            elif event_type == "thinking":
-                # Agent is thinking/reasoning
-                chunk = {
-                    "type": "thinking",
-                    "content": event.get("content", "")
-                }
-                yield f"data: {json.dumps(chunk)}\n\n"
-
-            elif event_type == "response":
-                # Final response from agent
-                final_response_content = event.get("content", "")
-                chunk = {
-                    "type": "response",
-                    "content": final_response_content,
-                    "finished": True
-                }
-                yield f"data: {json.dumps(chunk)}\n\n"
-                stream_completed = True
-
+            if event_type == "done":
+                break
             elif event_type == "error":
-                # Error occurred
-                chunk = {
-                    "type": "error",
-                    "error": event.get("error", "Unknown error")
+                error_data = {
+                    "error": {
+                        "message": data,
+                        "type": "server_error"
+                    }
                 }
-                yield f"data: {json.dumps(chunk)}\n\n"
+                yield f"data: {json.dumps(error_data)}\n\n"
+                return
+            elif event_type == "info":
+                # Send info update as SSE
+                info_data = data
+                sse_info = f"info: {info_data}\n\n"
+                print(f"[Stream] Yielding info: {len(data)} chars")
+                yield sse_info
+                await asyncio.sleep(0)
+            elif event_type == "chunk":
+                chunk_data = {
+                    "choices": [{
+                        "delta": {
+                            "content": data
+                        },
+                        "index": 0,
+                        "finish_reason": None
+                    }]
+                }
+                sse_data = f"data: {json.dumps(chunk_data)}\n\n"
+                print(f"[Stream] Yielding chunk: {len(data)} chars")
+                yield sse_data
+                await asyncio.sleep(0)
 
-        # Only update session history if stream completed successfully
-        if stream_completed and final_response_content is not None:
-            working_history.append({"role": "assistant", "content": final_response_content})
-            session["history"] = working_history
-
-        # Send done signal
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-    except Exception as e:
-        error_chunk = {
-            "type": "error",
-            "error": str(e)
+        # Send final chunk indicating completion
+        final_data = {
+            "choices": [{
+                "delta": {},
+                "index": 0,
+                "finish_reason": "stop"
+            }]
         }
-        yield f"data: {json.dumps(error_chunk)}\n\n"
+        yield f"data: {json.dumps(final_data)}\n\n"
+        yield "data: [DONE]\n\n"
 
-@app.post("/sessions/{session_id}/prompt")
-async def prompt_agent(session_id: str, request: PromptRequest):
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    session = sessions[session_id]
-    
-    # Get history
-    history = request.history if request.history else session["history"].copy()
-    
-    # If streaming is requested, return SSE stream
+    except asyncio.CancelledError:
+        # Client disconnected - signal the agent loop to stop
+        print("[generate_stream] Client disconnected, cancelling agent loop")
+        cancel_event.set()
+        raise
+    except GeneratorExit:
+        # Client closed connection
+        print("[generate_stream] Generator exit, cancelling agent loop")
+        cancel_event.set()
+        raise
+    except Exception as e:
+        import traceback
+        print(f"Error in generate_stream: {e!r}")
+        print(f"generate_stream error type: {type(e).__name__}")
+        traceback.print_exc()
+        cancel_event.set()  # Stop agent loop on any error
+        error_data = {
+            "error": {
+                "message": str(e) or type(e).__name__,
+                "type": "server_error"
+            }
+        }
+        yield f"data: {json.dumps(error_data)}\n\n"
+    finally:
+        # Ensure cancel is set when generator closes
+        cancel_event.set()
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: ChatRequest):
+    """
+    OpenAI-compatible chat completions endpoint with streaming support.
+    """
+    conversation = [msg.dict() for msg in request.messages]
+    if conversation[0]['role'] == 'user' and conversation[0]['content'].startswith('\\tau'):
+        selected_agent_loop = tau_agent_loop
+    else:
+        selected_agent_loop = search_agent_loop
     if request.stream:
         return StreamingResponse(
-            stream_agent_events(session_id, request.prompt, history),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
+            generate_stream(conversation, selected_agent_loop, request.meta_info, request.user_id, request.mcp_servers, request.enabled_tools, request.model),
+            media_type="text/event-stream"
         )
-    
-    # Non-streaming response (original behavior)
-    agent = session["agent"]
-    history.append({"role": "user", "content": request.prompt})
+    else:
+        # Non-streaming response (collect all chunks)
+        import threading
+        cancel_event = threading.Event()
+        full_response = ""
+        for chunk in selected_agent_loop(conversation, cancel_event, request.meta_info, request.user_id, request.mcp_servers, request.enabled_tools, request.model):
+            # Only accumulate string chunks, skip info dicts
+            if isinstance(chunk, str):
+                full_response += chunk
+        return {"choices": [{"message": {"role": "assistant", "content": full_response}, "index": 0,
+                             "finish_reason": "stop"}]}
 
-    result = await agent.process_message(history)
-
-    if "error" in result:
-        raise HTTPException(status_code=500, detail=result["error"])
-
-    response_text = result.get("response", "")
-    history.append({"role": "assistant", "content": response_text})
-    session["history"] = history
-
-    return PromptResponse(
-        response=response_text,
-        history=history
-    )
 
 @app.get("/health")
-async def health_check():
-    return {"status": "ok"}
+async def health():
+    return {"status": "healthy"}
+
+
+@app.get("/")
+async def root():
+    return {"message": "Agent Server", "version": "1.0.0",
+            "endpoints": {"chat": "/v1/chat/completions", "health": "/health"}}
+
 
 if __name__ == "__main__":
-    uvicorn.run("agent_main:app", host=settings.HOST, port=settings.PORT, reload=False)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)
