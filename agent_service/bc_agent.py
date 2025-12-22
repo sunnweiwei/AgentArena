@@ -1,54 +1,97 @@
-from pydantic import BaseModel
-from typing import List, Dict, Optional
-import json
-import os
-import requests
-from openai import OpenAI
 from utils import call_openai, BaseEnv, RuntimeServiceError, extract_fn_call, condense_history
 from tool_prompt import convert_tools_to_description, TOOL_PROMPT
 
+def bc_search_tool():
+    search = {
+        'type': 'function',
+        'function': {
+            "name": "search",
+            "description": "Performs a web search: supply a string 'query' and optional 'topk'. The tool retrieves the top 'topk' results (default 10) for the query, returning their docid, url, and document content (may be truncated based on token limits).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The query string for the search."
+                    },
+                    "topk": {
+                        "type": "integer",
+                        "description": "Return the top k pages.",
+                    }
+                },
+                "required": [
+                    "query"
+                ]
+            }
+        }
+    }
+    open_page = {
+        'type': 'function',
+        'function': {
+            'name': 'open_page',
+            'description': (
+                "Open a page by docid or URL and return the complete content. "
+                "Provide either 'docid' or 'url'; if both are provided, prefer 'docid'. "
+                "The docid or URL must come from prior search tool results."
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'docid': {
+                        'type': 'string',
+                        'description': 'Document ID from search results to resolve and fetch.',
+                    },
+                    'url': {
+                        'type': 'string',
+                        'description': 'Absolute URL from search results to fetch.',
+                    },
+                },
+                'required': [],
+            },
+        },
+    }
+    finish = {
+        'type': 'function',
+        'function': {
+            'name': 'finish',
+            'description': """Return the final result when you have a definitive answer or cannot progress further. Provide a concise answer plus a brief, evidence-grounded explanation.""",
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'answer': {
+                        'type': 'string',
+                        'description': 'A succinct, final answer.',
+                    },
+                    'explanation': {
+                        'type': 'string',
+                        'description': 'A brief explanation for your final answer. For this section only, cite evidence documents inline by placing their docids in square brackets at the end of sentences (e.g., [20]). Do not include citations anywhere else.',
+                    },
+                    'confidence': {
+                        'type': 'string',
+                        'description': 'Confidence: your confidence score between 0% and 100% for your answer',
+                    },
+                },
+                'required': ['answer', 'explanation'],
+            },
+        },
+    }
+    return [search, open_page, finish]
 
-
-class TauEnv(BaseEnv):
-    """Tau environment client with automatic recovery via conversation replay."""
-    def __init__(self, env_name, task_index):
-        super().__init__(env_name=env_name, task_index=task_index)
+class BCEnv(BaseEnv):
+    def __init__(self, question, label_answer):
+        super().__init__(question=question, label_answer=label_answer)
 
     def get_system_prompt(self):
-        """Get formatted system prompt from environment meta_info."""
-        if not self.meta_info:
-            ping_result = self.ping()
-            if ping_result['exists']:
-                self.meta_info = ping_result['meta_info']
-
-        if not self.meta_info:
-            return ""
-
-        tools_info = self.meta_info.get('tools_info', [])
-        wiki = self.meta_info.get('wiki', '')
+        tools_info = bc_search_tool()
         tool_description = TOOL_PROMPT.format(description=convert_tools_to_description(tools_info))
-        return wiki + '\n\n' + tool_description
+        return tool_description
 
     def get_canvas(self):
-        """Get formatted canvas from environment meta_info."""
-        return f"""**Instruction:**\n\n{self.meta_info['instruction']}\n\n**You may start with:**\n\n{self.meta_info['initial_question']}
-
-**Rules:**
-- Just generate one line at a time to simulate the user's message.
-- Do not give away all the instruction at once. Only provide the information that is necessary for the current step.
-- Do not hallucinate information that is not provided in the instruction. For example, if the agent asks for the order id but it is not mentioned in the instruction, do not make up an order id, just say you do not remember or have it.
-- If the instruction goal is satisified, generate '###STOP###' as a standalone message without anything else to end the conversation.
-- Use \\reward to check the current reward.
-- Do not repeat the exact instruction in the conversation. Instead, use your own words to convey the same information.
-- Try to make the conversation as natural as possible, and stick to the personalities in the instruction.
-
-**Task split:** {self.meta_info['env_name']}  
-**Task index:** {self.meta_info['task_index']}  
-**Runtime:** {self.runtime_id}"""
+        return f"""**Full Question:**\n\n{self.meta_info['question']}\n\n**Label Answer:**\n\n{self.meta_info['label_answer']}"""
 
 
-
-def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_servers=None, enabled_tools=None, model="Auto"):
+def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_servers=None, enabled_tools=None,
+               model="Auto"):
     def is_cancelled():
         return cancel_event is not None and cancel_event.is_set()
 
@@ -59,24 +102,24 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
     conversation = condense_history(conversation)
 
     # Extract runtime_id and env_name from meta_info if provided
-    task_index = None
+    question = None
+    label_answer = None
     existing_runtime_id = None
-    env_name = None
     if meta_info:
         for line in meta_info.splitlines():
             if line.startswith('runtime_id:'):
                 existing_runtime_id = line[len('runtime_id:'):].strip()
-            if line.startswith('task_index:'):
-                task_index = int(line[len('task_index:'):].strip())
+            if line.startswith('question:'):
+                question = int(line[len('question:'):].strip())
             if line.startswith('env_name:'):
-                env_name = line[len('env_name:'):].strip()
+                label_answer = line[len('label_answer:'):].strip()
 
-    if env_name is None:
+    if question is None or label_answer is None:
         import random
         env_name = random.choice(['airline', 'retail'])
 
-    tau_env = TauEnv(env_name=env_name, task_index=task_index)
-    
+    tau_env = BCEnv(question=question, label_answer=label_answer)
+
     # Try to initialize environment with graceful error handling
     try:
         tau_env.initialize(existing_runtime_id, conversation=conversation)
@@ -86,9 +129,9 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
     except Exception as e:
         yield f"⚠️ **Environment Initialization Failed**\n\nCould not initialize the environment: {e}"
         return
-    
+
     system_prompt = tau_env.get_system_prompt()
-    
+
     yield {'info': f'runtime_id: {tau_env.runtime_id}'}
     yield {'info': f'task_index: {tau_env.meta_info["task_index"]}'}
     yield {'info': f'env_name: {tau_env.meta_info["env_name"]}'}
@@ -154,7 +197,7 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
         chat.append({'role': 'assistant', 'content': answer})
         fn_call = extract_fn_call(answer)
         observation = None
-        
+
         # Check if extract_fn_call returned a format error
         if fn_call is not None and isinstance(fn_call, dict) and 'error' in fn_call:
             # Agent used wrong tool call format - inform them of the correct format
@@ -162,7 +205,7 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
             chat.append({'role': 'user', 'content': observation})
             yield '<|tool|>' + observation + '<|/tool|>'
             continue  # Let agent try again with correct format
-        
+
         if fn_call is not None and isinstance(fn_call, list) and len(fn_call) > 0:
             try:
                 for fn in fn_call:
@@ -173,13 +216,12 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
                 return
             except Exception as e:
                 observation = f"Error executing tool: {e}"
-        
+
         if observation is None:
             break
         chat.append({'role': 'user', 'content': observation})
         yield '<|tool|>' + observation + '<|/tool|>'
     return
-
 
 # for chunk in agent_loop("I'm looking to book a one-way flight from New York to Seattle on May 20."):
 #     print(chunk)
