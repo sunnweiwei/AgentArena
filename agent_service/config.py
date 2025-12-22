@@ -6,9 +6,9 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8001
     
-    # Paths - these are SERVER paths
-    BASE_DIR: str = "/usr1/data/weiweis/agent_service"
-    WORKSPACE_ROOT: str = os.path.join(BASE_DIR, "workspace")
+    # Paths - use local paths for local development
+    BASE_DIR: str = os.getenv("AGENT_SERVICE_BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
+    WORKSPACE_ROOT: str = os.getenv("AGENT_SERVICE_WORKSPACE", os.path.join(BASE_DIR, "workspace"))
     
     # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")

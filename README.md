@@ -21,9 +21,15 @@ See `ENV_SETUP.md` for detailed instructions.
 **Backend:**
 ```bash
 cd backend
-source venv/bin/activate  # or: python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+uv venv venv  # Create virtual environment with uv
+source venv/bin/activate
+uv pip install -r requirements.txt  # Install dependencies with uv
 python main.py
+```
+
+**Note:** This project uses [uv](https://github.com/astral-sh/uv) for fast Python package management. If you don't have uv installed:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 **Frontend:**

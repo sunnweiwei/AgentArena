@@ -2,11 +2,10 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import fs from 'fs'
 
-// Backend URL - defaults to sf.lti.cs.cmu.edu for cloud hosting
-// Frontend can be hosted separately, backend stays on sf.lti.cs.cmu.edu
+// Backend URL - defaults to localhost for local development
 // Can be overridden with BACKEND_URL environment variable
-const BACKEND_URL = process.env.BACKEND_URL || 'http://sf.lti.cs.cmu.edu:8000'
-const BACKEND_WS_URL = process.env.BACKEND_WS_URL || 'ws://sf.lti.cs.cmu.edu:8000'
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000'
+const BACKEND_WS_URL = process.env.BACKEND_WS_URL || 'ws://localhost:8000'
 
 // Check if SSL certificates exist (for HTTPS)
 // Use absolute path to avoid __dirname issues in ES modules
@@ -42,16 +41,15 @@ export default defineConfig({
     ],
     proxy: {
       '/api': {
-        // Backend URL - points to sf.lti.cs.cmu.edu:8000 for cloud hosting
-        // Frontend can be hosted separately, backend stays on sf.lti.cs.cmu.edu
+        // Backend URL - points to localhost:8000 for local development
         target: BACKEND_URL,
         changeOrigin: true,
         secure: false,
       },
       '/ws': {
-        // Backend WebSocket URL - points to sf.lti.cs.cmu.edu:8000 for cloud hosting
-        // Frontend can be hosted separately, backend stays on sf.lti.cs.cmu.edu
-        target: BACKEND_WS_URL,
+        // Backend WebSocket URL - points to localhost:8000 for local development
+        // Note: target should be HTTP URL, Vite converts to WS internally
+        target: BACKEND_URL.replace('ws://', 'http://').replace('wss://', 'https://'),
         ws: true,
         changeOrigin: true,
         secure: false,
