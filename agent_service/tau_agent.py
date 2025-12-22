@@ -6,7 +6,7 @@ import requests
 from openai import OpenAI
 from tavily import TavilyClient
 
-from agent_service.tools.tool_prompt import convert_tools_to_description, TOOL_PROMPT
+from tool_prompt import convert_tools_to_description, TOOL_PROMPT
 
 # Runtime service configuration
 RUNTIME_SERVICE_URL = os.getenv("RUNTIME_SERVICE_URL", "http://sf.lti.cs.cmu.edu:8005")
@@ -366,7 +366,7 @@ class TauEnv:
 
 
 
-def agent_loop(conversation, cancel_event=None, meta_info="", env_name='airline'):
+def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_servers=None, enabled_tools=None, model="Auto", env_name='airline'):
     def is_cancelled():
         return cancel_event is not None and cancel_event.is_set()
 

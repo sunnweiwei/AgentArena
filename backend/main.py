@@ -5,7 +5,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from pydantic import BaseModel
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict
 import uuid
 import asyncio
 import os
@@ -64,6 +64,36 @@ class Message(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     chat = relationship("Chat", back_populates="messages")
 
+class MCPServer(Base):
+    __tablename__ = "mcp_servers"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    name = Column(String)  # User-friendly name
+    server_id = Column(String, unique=True, index=True)  # Unique identifier
+    command = Column(String)  # Command to run (e.g., "npx", "python")
+    args = Column(Text)  # JSON array of arguments
+    env = Column(Text, nullable=True)  # JSON object of environment variables
+    enabled = Column(Integer, default=1)  # 1 = enabled, 0 = disabled
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    user = relationship("User")
+
+class UserTool(Base):
+    __tablename__ = "user_tools"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    tool_name = Column(String, index=True)  # e.g., "search", "extract", "web_search"
+    enabled = Column(Integer, default=1)  # 1 = enabled, 0 = disabled
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    user = relationship("User")
+    
+    __table_args__ = (
+        {'sqlite_autoincrement': True},
+    )
+
 # Create tables
 Base.metadata.create_all(bind=engine)
 
@@ -92,18 +122,8 @@ else:
 
 TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "gpt-4o-transcribe")
 
-# Model mapping
-MODEL_MAP = {
-    "Auto": "search_agent",  # Default to Search Agent
-    "GPT-5-Nano": "gpt-5-nano",
-    "GPT-5-Mini": "gpt-5-mini",
-    "Search Agent": "search_agent"
-}
-
-# External API configuration for models
-EXTERNAL_MODEL_APIS = {
-    "search_agent": os.getenv("SEARCH_AGENT_URL", "http://sf.lti.cs.cmu.edu:8001")
-}
+# Agent service URL - all models go through agent service
+AGENT_SERVICE_URL = os.getenv("AGENT_SERVICE_URL", "http://sf.lti.cs.cmu.edu:8001")
 
 
 def _event_to_dict(event):
@@ -498,6 +518,116 @@ async def get_shared_chat(share_token: str, db: Session = Depends(get_db)):
         ]
     }
 
+# MCP Server Management Endpoints
+class MCPServerCreate(BaseModel):
+    name: str
+    command: str
+    args: List[str]
+    env: Optional[Dict[str, str]] = None
+
+@app.post("/api/mcp/servers")
+async def create_mcp_server(server: MCPServerCreate, user_id: int, db: Session = Depends(get_db)):
+    """Create a new MCP server configuration"""
+    server_id = f"mcp_{user_id}_{int(time.time())}"
+    
+    mcp_server = MCPServer(
+        user_id=user_id,
+        name=server.name,
+        server_id=server_id,
+        command=server.command,
+        args=json.dumps(server.args),
+        env=json.dumps(server.env) if server.env else None,
+        enabled=1
+    )
+    db.add(mcp_server)
+    db.commit()
+    db.refresh(mcp_server)
+    
+    return {
+        "id": mcp_server.id,
+        "name": mcp_server.name,
+        "server_id": mcp_server.server_id,
+        "command": mcp_server.command,
+        "args": json.loads(mcp_server.args),
+        "env": json.loads(mcp_server.env) if mcp_server.env else None,
+        "enabled": bool(mcp_server.enabled),
+        "created_at": mcp_server.created_at.isoformat()
+    }
+
+@app.get("/api/mcp/servers")
+async def list_mcp_servers(user_id: int, db: Session = Depends(get_db)):
+    """List all MCP servers for a user"""
+    servers = db.query(MCPServer).filter(MCPServer.user_id == user_id).all()
+    
+    return [
+        {
+            "id": s.id,
+            "name": s.name,
+            "server_id": s.server_id,
+            "command": s.command,
+            "args": json.loads(s.args),
+            "env": json.loads(s.env) if s.env else None,
+            "enabled": bool(s.enabled),
+            "created_at": s.created_at.isoformat(),
+            "updated_at": s.updated_at.isoformat()
+        }
+        for s in servers
+    ]
+
+@app.put("/api/mcp/servers/{server_id}/enable")
+async def toggle_mcp_server(server_id: str, enabled: bool, user_id: int, db: Session = Depends(get_db)):
+    """Enable or disable an MCP server"""
+    server = db.query(MCPServer).filter(MCPServer.server_id == server_id, MCPServer.user_id == user_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+    
+    server.enabled = 1 if enabled else 0
+    server.updated_at = datetime.utcnow()
+    db.commit()
+    
+    return {"message": "Server updated", "enabled": enabled}
+
+@app.delete("/api/mcp/servers/{server_id}")
+async def delete_mcp_server(server_id: str, user_id: int, db: Session = Depends(get_db)):
+    """Delete an MCP server"""
+    server = db.query(MCPServer).filter(MCPServer.server_id == server_id, MCPServer.user_id == user_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+    
+    db.delete(server)
+    db.commit()
+    
+    return {"message": "Server deleted"}
+
+@app.get("/api/mcp/servers/{server_id}/tools")
+async def get_mcp_server_tools(server_id: str, user_id: int, db: Session = Depends(get_db)):
+    """Get tools available from an MCP server"""
+    server = db.query(MCPServer).filter(MCPServer.server_id == server_id, MCPServer.user_id == user_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+    
+    # Import MCP manager
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'agent_service'))
+    from mcp_manager import mcp_manager
+    
+    try:
+        # Connect to server and get tools
+        args = json.loads(server.args)
+        env = json.loads(server.env) if server.env else None
+        connected = await mcp_manager.connect_server(server.server_id, server.command, args, env)
+        
+        if connected:
+            tools = mcp_manager.get_tools(server.server_id)
+            # Convert to function schema format
+            function_tools = [mcp_manager.convert_mcp_tool_to_function_schema(tool) for tool in tools]
+            return {"tools": function_tools}
+        else:
+            return {"tools": [], "error": "Failed to connect to MCP server"}
+    except Exception as e:
+        return {"tools": [], "error": str(e)}
+
 @app.post("/api/chats/{chat_id}/messages")
 async def add_message(chat_id: str, content: str, role: str, user_id: int, db: Session = Depends(get_db)):
     """Add a message to a chat"""
@@ -651,6 +781,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     # Generate stream_id upfront for tracking
                     stream_id = f"stream-{chat_id}-{int(asyncio.get_event_loop().time() * 1000)}"
                     
+                    # Get enabled_tools from frontend message
+                    enabled_tools = data.get("enabled_tools", {})
+                    print(f"[WS] Received message with enabled_tools: {enabled_tools}")
+                    
                     task = asyncio.create_task(handle_chat_message(
                         websocket=websocket,
                         user_id=resolved_user_id,
@@ -659,7 +793,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         model=model,
                         meta_info=meta_info,
                         stream_id=stream_id,
-                        cancelled_streams=cancelled_streams
+                        cancelled_streams=cancelled_streams,
+                        enabled_tools=enabled_tools
                     ))
                     active_tasks.add(task)
                     active_streams[stream_id] = task
@@ -670,6 +805,27 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     
                     task.add_done_callback(cleanup_task)
 
+                elif msg_type == "mcp_tool_result":
+                    # Handle MCP tool result from frontend
+                    # Frontend executed tool locally and is sending result back
+                    request_id = data.get("request_id")
+                    result = data.get("result")
+                    server_id = data.get("server_id")
+                    tool_name = data.get("tool_name")
+                    
+                    # Forward result to waiting agent service request
+                    if hasattr(manager, 'pending_mcp_requests') and request_id in manager.pending_mcp_requests:
+                        future = manager.pending_mcp_requests[request_id]
+                        if not future.done():
+                            future.set_result(result)
+                        print(f"[WS] Forwarded MCP tool result for {server_id}/{tool_name}, request_id={request_id}")
+                    else:
+                        print(f"[WS] Received MCP tool result but no pending request found, request_id={request_id}")
+                    
+                elif msg_type == "mcp_tool_call":
+                    # This shouldn't happen - frontend sends results, not requests
+                    pass
+                    
                 elif msg_type == "stop":
                     # Handle stop generation request
                     stream_id_to_stop = data.get("stream_id")
@@ -727,7 +883,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             pass
 
 
-async def call_external_model_api(api_url: str, messages_history: list, websocket: WebSocket, chat_id: str, user_id: int, stream_id: str, meta_info: str = "", cancelled_streams: set = None):
+async def call_external_model_api(api_url: str, messages_history: list, websocket: WebSocket, chat_id: str, user_id: int, stream_id: str, meta_info: str = "", cancelled_streams: set = None, enabled_tools: dict = None, model: str = "Auto"):
     """
     Generic function to call any external model API with OpenAI-compatible streaming.
     Handles streaming response from external API servers.
@@ -741,6 +897,8 @@ async def call_external_model_api(api_url: str, messages_history: list, websocke
         stream_id: Stream identifier
         meta_info: Meta information for agent context
         cancelled_streams: Set of cancelled stream IDs
+        enabled_tools: Dict of tool_name -> enabled (True/False)
+        model: Model name selected by user
     """
     full_response = ""
     chunk_index = 0
@@ -749,11 +907,40 @@ async def call_external_model_api(api_url: str, messages_history: list, websocke
     
     try:
         # Prepare request (OpenAI-compatible format)
+        # Load enabled MCP servers for this user
+        mcp_servers = []
+        # enabled_tools is passed from the WebSocket message - don't overwrite it!
+        with SessionLocal() as db:
+            enabled_servers = db.query(MCPServer).filter(
+                MCPServer.user_id == user_id,
+                MCPServer.enabled == 1
+            ).all()
+            for server in enabled_servers:
+                mcp_servers.append({
+                    "server_id": server.server_id,
+                    "name": server.name,
+                    "command": server.command,
+                    "args": json.loads(server.args),
+                    "env": json.loads(server.env) if server.env else None,
+                })
+            
+        # Get enabled_tools from function parameter (passed from WebSocket message)
+        # Default to empty dict (all tools enabled) if not provided
+        if enabled_tools is None:
+            enabled_tools = {}
+        
+        print(f"[handle_chat_message] enabled_tools being sent to agent: {enabled_tools}")
+        
         request_payload = {
             "messages": messages_history,
             "stream": True,
-            "meta_info": meta_info
+            "meta_info": meta_info,
+            "user_id": user_id,
+            "mcp_servers": mcp_servers,
+            "enabled_tools": enabled_tools,  # Pass tool preferences to agent
+            "model": model  # Pass model selection to agent
         }
+        print(f"[call_external_model_api] request_payload model: {model}, enabled_tools: {enabled_tools}")
         
         # Call external API with streaming
         async with aiohttp.ClientSession() as session:
@@ -995,7 +1182,7 @@ async def call_external_model_api(api_url: str, messages_history: list, websocke
         return ""
 
 
-async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, content: str, model: str, meta_info: str = "", stream_id: str = None, cancelled_streams: set = None):
+async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, content: str, model: str, meta_info: str = "", stream_id: str = None, cancelled_streams: set = None, enabled_tools: dict = None):
     user_payload = None
     stream_id = stream_id or str(uuid.uuid4())
     cancelled_streams = cancelled_streams or set()
@@ -1047,316 +1234,40 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
         except Exception as send_err:
             print(f"Error sending user message: {send_err}")
 
-    # Handle agent response
+    # Handle agent response - always forward to agent service
     try:
-        print(f"Received model: {model}, OpenAI client available: {openai_client is not None}")
-        openai_model = MODEL_MAP.get(model)
-        print(f"Mapped model: {openai_model}")
+        print(f"Received model: {model}, forwarding to agent service")
         
-        # Check if model uses external API
-        if openai_model and openai_model in EXTERNAL_MODEL_APIS:
-            # Use external API
-            external_api_url = EXTERNAL_MODEL_APIS[openai_model]
-            
-            # Get conversation history
-            with SessionLocal() as db:
-                chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
-                if not chat:
-                    await manager.send_personal_message({
-                        "type": "error",
-                        "message": "Chat not found",
-                        "chat_id": chat_id
-                    }, websocket)
-                    return
-                
-                # Build message history (user message already in chat.messages after commit)
-                messages_history = []
-                for msg in chat.messages:
-                    messages_history.append({"role": msg.role, "content": msg.content})
-            
-            # Start streaming response
-            start_time = time.time()
-            print(f"[TIMING] External API streaming started for chat {chat_id} (stream {stream_id}) at {start_time}")
-            await manager.send_personal_message({
-                "type": "message_start",
-                "role": "assistant",
-                "stream_id": stream_id,
-                "chat_id": chat_id
-            }, websocket)
-            
-            # Get meta_info from chat
-            chat_meta_info = chat.meta_info or ""
-            
-            # Stream response from external API
-            await call_external_model_api(external_api_url, messages_history, websocket, chat_id, user_id, stream_id, chat_meta_info, cancelled_streams)
-            
-        elif openai_model is None or openai_client is None:
-            # Use simulated response for Auto or if OpenAI not available
-            await asyncio.sleep(0.5)
-            agent_response = f"This is a simulated agent response to: {content[:30]}..."
-
-            with SessionLocal() as db:
-                chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
-                if not chat:
-                    await manager.send_personal_message({
-                        "type": "error",
-                        "message": "Chat not found",
-                        "chat_id": chat_id
-                    }, websocket)
-                    return
-
-                agent_message = Message(chat_id=chat_id, role="assistant", content=agent_response)
-                db.add(agent_message)
-                chat.updated_at = datetime.utcnow()
-                db.commit()
-                
+        # Get conversation history
+        with SessionLocal() as db:
+            chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+            if not chat:
                 await manager.send_personal_message({
-                    "type": "message",
-                    "id": agent_message.id,
-                    "role": "assistant",
-                    "content": agent_response,
-                    "created_at": agent_message.created_at.isoformat(),
+                    "type": "error",
+                    "message": "Chat not found",
                     "chat_id": chat_id
                 }, websocket)
-        else:
-            # Use OpenAI streaming
-            # Get conversation history
-            with SessionLocal() as db:
-                chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
-                if not chat:
-                    await manager.send_personal_message({
-                        "type": "error",
-                        "message": "Chat not found",
-                        "chat_id": chat_id
-                    }, websocket)
-                    return
-                
-                # Build message history with system prompt (user message already in chat.messages after commit)
-                messages_history = [
-                    {
-                        "role": "system",
-                        "content": "You are a helpful assistant. Always respond in English. When creating tables, use proper Markdown table syntax (| Column | Column |) instead of ASCII art tables. Format your responses clearly with proper Markdown formatting."
-                    }
-                ]
-                messages_history.extend([
-                    {"role": msg.role, "content": msg.content}
-                    for msg in chat.messages
-                ])
-
-            # Start streaming response (use provided stream_id)
-            start_time = time.time()
-            print(f"[TIMING] Streaming response started for chat {chat_id} (stream {stream_id}) at {start_time}")
-            await manager.send_personal_message({
-                "type": "message_start",
-                "role": "assistant",
-                "stream_id": stream_id,
-                "chat_id": chat_id
-            }, websocket)
-
-            full_response = ""
-            try:
-                loop = asyncio.get_running_loop()
-                stream_queue: asyncio.Queue = asyncio.Queue()
-
-                def stream_worker():
-                    try:
-                        api_call_start = time.time()
-                        print(f"[TIMING] Calling OpenAI API with model {openai_model}")
-                        stream = openai_client.responses.create(
-                            model=openai_model,
-                            input=messages_history,
-                            stream=True
-                        )
-                        api_call_time = time.time() - api_call_start
-                        print(f"[TIMING] OpenAI API call returned in {api_call_time*1000:.2f}ms")
-                        for ev in stream:
-                            loop.call_soon_threadsafe(stream_queue.put_nowait, ("event", ev))
-                        loop.call_soon_threadsafe(stream_queue.put_nowait, ("done", None))
-                    except Exception as worker_err:
-                        print(f"OpenAI worker error: {worker_err}")
-                        loop.call_soon_threadsafe(stream_queue.put_nowait, ("error", worker_err))
-
-                worker_task = asyncio.create_task(asyncio.to_thread(stream_worker))
-
-                                # Batch chunks that arrive within 0.1s for smoother output
-                batch_buffer = ""
-                last_send_time = asyncio.get_event_loop().time()
-                first_chunk_received = False
-                streaming_error = None
-                chunk_index = 0
-
-                was_cancelled = False
-                while True:
-                    # Check for cancellation
-                    if stream_id in cancelled_streams:
-                        print(f"[OpenAI] Stream {stream_id} cancelled by user")
-                        was_cancelled = True
-                        worker_task.cancel()
-                        break
-                    
-                    try:
-                        # Use timeout to allow checking for cancellation periodically
-                        event_type, payload = await asyncio.wait_for(stream_queue.get(), timeout=0.5)
-                    except asyncio.TimeoutError:
-                        continue
-                    
-                    if event_type == "done":
-                        break
-                    if event_type == "error":
-                        streaming_error = str(payload)
-                        break
-                    event = payload
-                    event_type = getattr(event, "type", None)
-                    if not first_chunk_received and event_type and "delta" in event_type:
-                        first_chunk_time = time.time() - start_time
-                        print(f"[TIMING] First chunk received after {first_chunk_time*1000:.2f}ms")
-                        first_chunk_received = True
-
-                    if isinstance(event_type, str) and "output_text" in event_type and "delta" in event_type:
-                        delta_text = _extract_text_from_response_event(event)
-                        if not delta_text:
-                            continue
-                        print(f"Streaming chunk: {delta_text!r}")
-                        full_response += delta_text
-                        batch_buffer += delta_text
-
-                        current_time = asyncio.get_event_loop().time()
-                        if (current_time - last_send_time >= 0.1) or len(batch_buffer) > 80:
-                            chunk_index += 1
-                            await manager.send_personal_message({
-                                "type": "message_chunk",
-                                "content": batch_buffer,
-                                "stream_id": stream_id,
-                                "chunk_index": chunk_index,
-                                "chat_id": chat_id
-                            }, websocket)
-                            print(f"Sent batched chunk: {len(batch_buffer)} chars")
-                            batch_buffer = ""
-                            last_send_time = current_time
-
-                    elif event_type in {"response.completed", "response.output_text.done"}:
-                        print(f"Received completion event: {event_type}")
-                        break
-
-                    elif event_type in {"response.failed", "response.error", "error"}:
-                        streaming_error = _extract_error_from_response_event(event) or "OpenAI streaming failed"
-                        print(f"Streaming error event: {streaming_error}")
-                        break
-
-                    else:
-                        # Other events (created, in-progress, etc.) are informational
-                        continue
-
-                # Send any remaining buffered content
-                if batch_buffer:
-                    chunk_index += 1
-                    await manager.send_personal_message({
-                        "type": "message_chunk",
-                        "content": batch_buffer,
-                        "stream_id": stream_id,
-                        "chunk_index": chunk_index,
-                        "chat_id": chat_id
-                    }, websocket)
-                    print(f"Sent final batched chunk: {len(batch_buffer)} chars")
-
-                if streaming_error:
-                    if not worker_task.done():
-                        worker_task.cancel()
-                    raise RuntimeError(streaming_error)
-
-                if not worker_task.done():
-                    try:
-                        await worker_task
-                    except asyncio.CancelledError:
-                        pass
-
-                # Prepare final content
-                final_content = full_response
-
-                # Save complete/partial message to database
-                with SessionLocal() as db:
-                    chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
-                    if not chat:
-                        await manager.send_personal_message({
-                            "type": "error",
-                            "message": "Chat not found",
-                            "chat_id": chat_id
-                        }, websocket)
-                        return
-
-                    agent_message = Message(chat_id=chat_id, role="assistant", content=final_content)
-                    db.add(agent_message)
-                    chat.updated_at = datetime.utcnow()
-                    db.commit()
-
-                    # Send message complete with ID
-                    status = "cancelled" if was_cancelled else "completed"
-                    print(f"Streaming response {status} for chat {chat_id} (stream {stream_id})")
-                    await manager.send_personal_message({
-                        "type": "message_complete",
-                        "id": agent_message.id,
-                        "role": "assistant",
-                        "content": final_content,
-                        "created_at": agent_message.created_at.isoformat(),
-                        "stream_id": stream_id,
-                        "chunk_count": chunk_index,
-                        "chat_id": chat_id
-                    }, websocket)
-
-            except Exception as openai_err:
-                import traceback
-                print(f"OpenAI API error: {openai_err!r}")
-                traceback.print_exc()
-                error_msg = str(openai_err) or type(openai_err).__name__
-
-                if full_response.strip():
-                    # We have partial content: keep it and append a short note.
-                    short_msg = error_msg
-                    if len(short_msg) > 300:
-                        short_msg = short_msg[:300] + "..."
-                    response_with_note = (
-                        full_response
-                        + f"\n\n---\n⚠️ **Response incomplete**: {short_msg}"
-                    )
-
-                    # Persist partial response
-                    with SessionLocal() as db:
-                        chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
-                        if chat:
-                            agent_message = Message(chat_id=chat_id, role="assistant", content=response_with_note)
-                            db.add(agent_message)
-                            chat.updated_at = datetime.utcnow()
-                            db.commit()
-
-                            # Tell client the stream is complete with the partial response
-                            # DO NOT send error event - it causes frontend to delete the message!
-                            await manager.send_personal_message({
-                                "type": "message_complete",
-                                "id": agent_message.id,
-                                "role": "assistant",
-                                "content": response_with_note,
-                                "created_at": agent_message.created_at.isoformat(),
-                                "stream_id": stream_id,
-                                "chunk_count": chunk_index,
-                                "chat_id": chat_id
-                            }, websocket)
-                else:
-                    # No partial content at all – behave like a hard failure
-                    await manager.send_personal_message({
-                        "type": "error",
-                        "message": f"Error calling OpenAI: {error_msg}",
-                        "stream_id": stream_id,
-                        "chat_id": chat_id
-                    }, websocket)
-                    # Also send message_complete to close the streaming message with an explicit error text
-                    await manager.send_personal_message({
-                        "type": "message_complete",
-                        "id": None,
-                        "role": "assistant",
-                        "content": f"Error: {error_msg}",
-                        "created_at": datetime.utcnow().isoformat(),
-                        "chat_id": chat_id
-                    }, websocket)
+                return
+            
+            # Build message history (user message already in chat.messages after commit)
+            messages_history = []
+            for msg in chat.messages:
+                messages_history.append({"role": msg.role, "content": msg.content})
+            
+            chat_meta_info = chat.meta_info or ""
+        
+        # Start streaming response
+        start_time = time.time()
+        print(f"[TIMING] Agent API streaming started for chat {chat_id} (stream {stream_id}) at {start_time}")
+        await manager.send_personal_message({
+            "type": "message_start",
+            "role": "assistant",
+            "stream_id": stream_id,
+            "chat_id": chat_id
+        }, websocket)
+        
+        # Stream response from agent service - pass model name
+        await call_external_model_api(AGENT_SERVICE_URL, messages_history, websocket, chat_id, user_id, stream_id, chat_meta_info, cancelled_streams, enabled_tools, model)
 
     except Exception as agent_err:
         import traceback
@@ -1366,7 +1277,7 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
         try:
             await manager.send_personal_message({
                 "type": "error",
-                "message": "Failed to generate response",
+                "message": f"Server error: {str(agent_err)}",
                 "chat_id": chat_id
             }, websocket)
         except Exception:

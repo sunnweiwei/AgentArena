@@ -7,9 +7,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Optional
-from agent_service.search_agent import agent_loop as search_agent_loop
-from agent_service.tau_agent import agent_loop as tau_agent_loop
+from typing import List, Dict, Optional, Any
+from search_agent import agent_loop as search_agent_loop
+from tau_agent import agent_loop as tau_agent_loop
 import json
 import os
 
@@ -33,8 +33,12 @@ class ChatRequest(BaseModel):
     messages: List[Message]
     stream: bool = True
     meta_info: str = ""
+    user_id: Optional[int] = None
+    mcp_servers: Optional[List[Dict]] = None
+    enabled_tools: Optional[Dict[str, bool]] = None  # tool_name -> enabled
+    model: str = "Auto"  # Model name selected by user
 
-async def generate_stream(messages: List[Dict[str, str]], agent_loop, meta_info: str = ""):
+async def generate_stream(messages: List[Dict[str, str]], agent_loop, meta_info: str = "", user_id: Optional[int] = None, mcp_servers: Optional[List[Dict]] = None, enabled_tools: Optional[Dict[str, bool]] = None, model: str = "Auto"):
     """
     Generate streaming response in OpenAI-compatible format.
     Yields Server-Sent Events (SSE) format.
@@ -54,11 +58,12 @@ async def generate_stream(messages: List[Dict[str, str]], agent_loop, meta_info:
         try:
             import sys
             print(f"[run_agent_loop] Starting agent loop with agent: {agent_loop.__name__}")
+            print(f"[run_agent_loop] enabled_tools passed to agent_loop: {enabled_tools}")
             sys.stdout.flush()
             conversation = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
             print(f"[run_agent_loop] Calling agent_loop with conversation: {conversation[:1]}")
             sys.stdout.flush()
-            for chunk in agent_loop(conversation, cancel_event, meta_info):
+            for chunk in agent_loop(conversation, cancel_event, meta_info, user_id, mcp_servers, enabled_tools, model):
                 if cancel_event.is_set():
                     print("[run_agent_loop] Cancel detected, stopping")
                     sys.stdout.flush()
@@ -183,7 +188,7 @@ async def chat_completions(request: ChatRequest):
         selected_agent_loop = search_agent_loop
     if request.stream:
         return StreamingResponse(
-            generate_stream(conversation, selected_agent_loop, request.meta_info),
+            generate_stream(conversation, selected_agent_loop, request.meta_info, request.user_id, request.mcp_servers, request.enabled_tools, request.model),
             media_type="text/event-stream"
         )
     else:
@@ -191,7 +196,7 @@ async def chat_completions(request: ChatRequest):
         import threading
         cancel_event = threading.Event()
         full_response = ""
-        for chunk in selected_agent_loop(conversation, cancel_event, request.meta_info):
+        for chunk in selected_agent_loop(conversation, cancel_event, request.meta_info, request.user_id, request.mcp_servers, request.enabled_tools, request.model):
             # Only accumulate string chunks, skip info dicts
             if isinstance(chunk, str):
                 full_response += chunk

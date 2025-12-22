@@ -9,6 +9,7 @@
   flex-shrink: 0;
   height: 100vh;
   height: 100dvh;
+  position: relative;
 }
 
 .sidebar.locked {
@@ -49,6 +50,7 @@
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-shrink: 0;
   height: var(--chat-header-height);
   box-sizing: border-box;
 }
@@ -107,10 +109,20 @@
 }
 
 
+/* Main content area between header and footer */
+.sidebar-main {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .chat-list {
   flex: 1;
   overflow-y: auto;
   padding: 8px;
+  min-height: 0;
 }
 
 .chat-item {
@@ -227,6 +239,8 @@
   height: auto;
   position: relative;
   overflow: visible;
+  z-index: 10;
+  flex-shrink: 0;
 }
 
 .user-summary-button {
@@ -310,46 +324,7 @@
   opacity: 0.8;
 }
 
-.user-menu-dropdown {
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 100%;
-  margin-bottom: 8px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  padding: 6px 0;
-  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.15);
-  z-index: 1000;
-}
-
-.user-menu-item {
-  width: 100%;
-  background: transparent;
-  border: none;
-  text-align: left;
-  padding: 10px 14px;
-  color: var(--text-primary);
-  font-size: 14px;
-  cursor: pointer;
-  transition: background-color 0.15s, color 0.15s;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.user-menu-item svg {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  opacity: 0.7;
-}
-
-.user-menu-item:hover {
-  background: var(--bg-tertiary);
-  color: var(--accent);
-}
+/* Settings panel styles moved to SettingsPanel.css */
 
 .logout-button {
   width: 32px;

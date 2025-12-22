@@ -219,7 +219,7 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
     return <div className="loading">Loading...</div>
   }
 
-  // If viewing shared chat, show read-only view
+  // If viewing shared chat, show read-only view (no login required)
   if (shareToken && sharedChat) {
     return (
       <div className="chat-interface shared-chat-view">
@@ -229,8 +229,8 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
           pendingChats={{}}
           onSelectChat={noop}
           onCreateChat={noop}
-          onLogout={handleLogout}
-          user={user}
+          onLogout={noop}
+          user={null}
           isOpen={false}
           onToggle={noop}
           theme={theme}
@@ -244,8 +244,8 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
           onUpdateTitle={noop}
           onChatUpdate={noop}
           onCreateChat={noop}
-          user={user}
-          onLogin={onLogin}
+          user={null} // No user required for shared chat
+          onLogin={onLogin} // Allow login if user wants to
           sidebarOpen={false}
           onToggleSidebar={noop}
           onChatPendingStateChange={noop}

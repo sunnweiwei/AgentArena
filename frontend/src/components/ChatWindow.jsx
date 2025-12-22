@@ -700,11 +700,15 @@ const ChatWindow = ({
 
     const connectSocket = () => {
       if (!isAlive) return
+      // Use relative path for WebSocket to go through Vite proxy
+      // The proxy will forward /ws to the backend WebSocket server
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const wsHost = window.location.host
-      const socket = new WebSocket(`${wsProtocol}//${wsHost}/ws/${userId}`)
+      // Use relative path so Vite proxy handles it
+      const wsUrl = `${wsProtocol}//${wsHost}/ws/${userId}`
+      const socket = new WebSocket(wsUrl)
       wsRef.current = socket
-      console.log('Opening WebSocket:', `${wsProtocol}//${wsHost}/ws/${userId}`)
+      console.log('Opening WebSocket:', wsUrl)
 
       connectionTimeoutRef.current = setTimeout(() => {
         if (socket.readyState === WebSocket.CONNECTING) {
@@ -845,12 +849,30 @@ const ChatWindow = ({
       }
     ])
 
+    // Get tool preferences from localStorage (frontend-managed).
+    // Default: web_search enabled.
+    let enabled_tools = { web_search: true }
+    if (userId && typeof window !== 'undefined') {
+      const stored = localStorage.getItem(`tools_${userId}`)
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored)
+          if (parsed && typeof parsed === 'object') {
+            enabled_tools = { ...enabled_tools, ...parsed }
+          }
+        } catch (e) {
+          console.error('Failed to parse tool preferences:', e)
+        }
+      }
+    }
+
     const payload = {
       type: 'message',
       chat_id: chatId,
       content: trimmed,
       model: selectedModel,
-      meta_info: metaInfo
+      meta_info: metaInfo,
+      enabled_tools: enabled_tools  // Pass tool preferences
     }
 
     const socket = wsRef.current
@@ -1035,7 +1057,7 @@ const ChatWindow = ({
     }
   }
 
-  const models = ['Auto', 'GPT-5-Nano', 'GPT-5-Mini', 'Search Agent']
+  const models = ['Auto', 'GPT-5 mini', 'GPT-5 nano', 'GPT-5.2', 'GPT-5 mini (Search)', 'GPT-5.2 (Search)']
 
   const renderModelSelector = () => (
     <div className="model-selector-container" ref={modelSelectorRef}>
@@ -1083,7 +1105,8 @@ const ChatWindow = ({
     </div>
   )
 
-  if (!user) {
+  // Show login UI only if not viewing a shared chat
+  if (!user && !isSharedView) {
     return (
       <div className="chat-window">
         <div className="chat-header">

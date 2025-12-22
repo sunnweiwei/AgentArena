@@ -49,9 +49,9 @@ export default defineConfig({
         secure: false,
       },
       '/ws': {
-        // Backend WebSocket URL - points to sf.lti.cs.cmu.edu:8000 for cloud hosting
-        // Frontend can be hosted separately, backend stays on sf.lti.cs.cmu.edu
-        target: BACKEND_WS_URL,
+        // Backend WebSocket proxy - Vite will handle WebSocket upgrade automatically
+        // Use HTTP URL for target, Vite handles ws:// upgrade
+        target: BACKEND_URL,  // Use HTTP URL, not WebSocket URL
         ws: true,
         changeOrigin: true,
         secure: false,
