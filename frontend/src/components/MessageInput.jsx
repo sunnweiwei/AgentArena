@@ -429,7 +429,7 @@ const MessageInput = ({ onSendMessage, onStopGeneration, disabled, isStreaming }
           <button
             type="submit"
             className="send-button"
-            disabled={!message.trim() || disabled || isTranscribing}
+            disabled={!message.trim() || disabled || isTranscribing || isStreaming}
             aria-label="Send message"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
