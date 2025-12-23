@@ -8,6 +8,8 @@ import time
 import uuid
 from itertools import groupby
 from typing import *
+from unidiff import PatchedFile, PatchSet
+from unidiff.errors import UnidiffParseError
 import numpy as np
 import requests
 import torch
@@ -86,17 +88,7 @@ class GymEnv:
         meta_info['uid'] = item.non_tensor_batch['uid'][0]
         meta_info['reward_model'] = item.non_tensor_batch['reward_model'][0]
 
-        if "max_turn" in item.meta_info:
-            max_turn = item.meta_info["max_turn"]
-        else:
-            if context.is_train:
-                max_turn = self.config.plugin.max_turn
-            else:
-                if "val_max_turn" in self.config.plugin:
-                    max_turn = self.config.plugin.val_max_turn
-                else:
-                    max_turn = self.config.plugin.max_turn
-        return conversations, {'max_turn': max_turn, 'instance_info': self.instance_info, 'meta_info': meta_info}
+        return conversations, {'max_turn': 100, 'instance_info': self.instance_info, 'meta_info': meta_info}
 
     async def run_action(self, response):
         self.stats['action'] += 1
@@ -1219,8 +1211,6 @@ class RepairEnv:
         return 1 if self._finish_called else 0
 
     def get_filelevel_diff(self, patch_text: str) -> dict[str, str]:
-        from unidiff import PatchedFile, PatchSet
-        from unidiff.errors import UnidiffParseError
         try:
             patch = PatchSet(patch_text)
         except UnidiffParseError:
