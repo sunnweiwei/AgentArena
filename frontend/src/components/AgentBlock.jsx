@@ -123,8 +123,8 @@ export function parseAgentMarkup(content) {
   const parts = []
   let position = 0
 
-  // First pass: find <|think|> and <|tool|> blocks only
-  const blockRegex = /<\|(think|tool)\|>(.*?)<\|\/\1\|>/gs
+  // First pass: find <|think|>, <|tool|>, and <|highlight|> blocks
+  const blockRegex = /<\|(think|tool|highlight)\|>(.*?)<\|\/\1\|>/gs
   const matches = [...content.matchAll(blockRegex)]
 
   for (const match of matches) {
@@ -147,6 +147,9 @@ export function parseAgentMarkup(content) {
     } else if (match[1] === 'tool') {
       // Tool results block - DO NOT parse function calls inside
       parts.push({ type: 'tool-results', content: match[2] })
+    } else if (match[1] === 'highlight') {
+      // Highlight block - keep as is, no function call parsing
+      parts.push({ type: 'highlight', content: match[2] })
     }
 
     position = endIndex
@@ -283,6 +286,21 @@ export function ToolResultsBlock({ content, connectedToTool }) {
 }
 
 /**
+ * Highlight block component with green styling
+ */
+export function HighlightBlock({ content }) {
+  return (
+    <div className="agent-block highlight">
+      <div className="highlight-content">
+        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+          {content}
+        </ReactMarkdown>
+      </div>
+    </div>
+  )
+}
+
+/**
  * Main component to render parsed agent content
  */
 export function AgentContent({ content, showInlineLoading = false }) {
@@ -321,6 +339,20 @@ export function AgentContent({ content, showInlineLoading = false }) {
           )
         } else if (part.type === 'think') {
           return <ThinkBlock key={index} content={part.content} />
+        } else if (part.type === 'highlight') {
+          const isLastPart = index === parts.length - 1
+          return (
+            <React.Fragment key={index}>
+              <HighlightBlock content={part.content} />
+              {showInlineLoading && isLastPart && (
+                <span className="inline-loading">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </span>
+              )}
+            </React.Fragment>
+          )
         } else if (part.type === 'tool-call') {
           // Check if next part is tool-results
           const nextPart = parts[index + 1]

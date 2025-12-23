@@ -309,7 +309,7 @@ class BaseEnv:
 import re
 from typing import List, Dict
 
-_TAG_RE = re.compile(r"<\|(think|tool|canvas)\|>(.*?)<\|/\1\|>", re.DOTALL)
+_TAG_RE = re.compile(r"<\|(think|tool|canvas|highlight)\|>(.*?)<\|/\1\|>", re.DOTALL)
 
 
 def split_agent_markup(s: str) -> List[Dict[str, str]]:
@@ -356,6 +356,8 @@ def condense_history(conversation):
                 if sub_turn['role'] == 'think':
                     continue
                 elif sub_turn['role'] == 'canvas':
+                    continue
+                elif sub_turn['role'] == 'highlight':
                     continue
                 elif sub_turn['role'] == 'text':
                     new_conversation.append({'role': 'assistant', 'content': sub_turn['content']})

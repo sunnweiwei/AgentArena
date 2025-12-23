@@ -256,4 +256,42 @@
   background: rgba(255, 255, 255, 0.35);
 }
 
+/* Highlight Block - Green styling */
+.agent-block.highlight {
+  background: transparent;  /* Same as chat background */
+  padding: 12px 16px;
+  border-radius: 6px;
+  margin: 10px 0;
+  border: 1.5px solid #c8e6c9;  /* Original subtle green border for light mode */
+}
+
+.highlight-content {
+  font-size: 0.95em;
+  color: inherit;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Dark mode: Original dark gray-green border */
+[data-theme="dark"] .agent-block.highlight {
+  background: transparent;  /* Same as chat background */
+  border-color: #3d4f3d;  /* Original dark gray-green border */
+}
+
+/* Remove extra margins from markdown content in highlight */
+.highlight-content > * {
+  margin: 0;
+}
+
+.highlight-content > * + * {
+  margin-top: 0.75em;
+}
+
+.highlight-content p {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+}
+
 

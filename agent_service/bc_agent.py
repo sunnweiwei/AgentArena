@@ -203,6 +203,10 @@ def condense_history(conversation):
             for sub_turn in split_turn:
                 if sub_turn['role'] == 'think':
                     continue
+                elif sub_turn['role'] == 'canvas':
+                    continue
+                elif sub_turn['role'] == 'highlight':
+                    continue
                 elif sub_turn['role'] == 'text':
                     new_conversation.append({'role': 'assistant', 'content': sub_turn['content']})
                 elif sub_turn['role'] == 'tool':
@@ -364,7 +368,7 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
         chat.append({'role': 'user', 'content': observation})
         yield '<|tool|>' + observation + '<|/tool|>'
         if observation == 'finish':
-            yield f"## Answer\n\n{predicted_answer}\n\nConfidence: {confidence}\n\n{explanation}"
+            yield f"<|highlight|>**Answer:** {predicted_answer}\n\n**Confidence:** {confidence}\n\n**Explanation:** {explanation}<|/highlight|>"
             break
     return
 
