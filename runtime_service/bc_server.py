@@ -218,7 +218,7 @@ def optimized_worker(gpu_id: int, batch_queue: mp.Queue, result_queue: mp.Queue,
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, padding_side='left')
         # Try flash_attention_2, fallback to default if not available
         try:
-        model = AutoModel.from_pretrained(MODEL_NAME, torch_dtype=torch.bfloat16,
+            model = AutoModel.from_pretrained(MODEL_NAME, torch_dtype=torch.bfloat16,
                                           attn_implementation="flash_attention_2").to(device)
         except Exception as e:
             print(f"FlashAttention2 not available, using default: {e}")
