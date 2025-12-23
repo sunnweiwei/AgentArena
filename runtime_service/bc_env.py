@@ -197,7 +197,25 @@ async def call_openai_raw(messages, model='gpt-4o-mini', max_retries=3):
     from openai import AsyncOpenAI
     if isinstance(messages, str):
         messages = [{'role': 'user', 'content': messages}]
-    client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    # Load API key from environment or file
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        # Try to load from file (same location as other services)
+        try:
+            key_paths = [
+                os.path.join(os.path.dirname(__file__), '..', 'openaikey'),
+                '/usr1/data/weiweis/chat_server/openaikey',
+            ]
+            for key_path in key_paths:
+                if os.path.exists(key_path):
+                    with open(key_path, 'r') as f:
+                        api_key = f.read().strip()
+                        break
+        except Exception as e:
+            print(f"[bc_env] Warning: Could not load OpenAI API key from file: {e}")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY not set in environment or file")
+    client = AsyncOpenAI(api_key=api_key)
     for attempt in range(max_retries):
         try:
             resp = await client.chat.completions.create(model=model, messages=messages)
@@ -439,8 +457,8 @@ class LocalSearch:
             fn_call = extract_fn_call(response)
 
         if fn_call is None or len(fn_call) == 0:
-            # Improved message for no function call
-            return {'observation': 'No function call was detected in the model response.'}
+            # Improved message for no function call - directive to proceed immediately
+            return {'observation': 'No function call was detected. You must immediately call a tool (search or open_page) to continue. Do not ask for confirmation - proceed directly with your next tool call.'}
         else:
             observation = ''
             for fn in fn_call:

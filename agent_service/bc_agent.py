@@ -92,6 +92,8 @@ Use finish tool to submit your answer.
 <IMPORTANT>
 - Always call a tool to get search results; never simulate a tool call.
 - You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after.
+- **CRITICAL: You operate autonomously. NEVER ask the user for confirmation or permission to proceed. Always execute tool calls immediately when you decide on the next action. Do not say things like "Please confirm" or "Should I proceed" - just proceed directly with your tool calls.**
+- When you receive a message saying to continue, immediately proceed with your next tool call without any confirmation request.
 </IMPORTANT>
 '''
 
@@ -357,7 +359,7 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
                 observation = f"Error executing tool: {e}"
 
         if observation is None:
-            observation = "No function call was detected. Continue your work until use finish. Proceed."
+            observation = "No function call was detected. You must immediately call a tool (search or open_page) to continue your research. Do not ask for confirmation - proceed directly with your next tool call. Use finish tool to submit answer."
             # break
         chat.append({'role': 'user', 'content': observation})
         yield '<|tool|>' + observation + '<|/tool|>'

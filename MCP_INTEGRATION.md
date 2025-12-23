@@ -81,3 +81,4 @@ MCP tools are converted to the same function schema format as regular tools:
 - [ ] Agent integration (loading MCP tools)
 - [ ] Agent integration (executing MCP tools)
 - [ ] Frontend UI for configuration
+
