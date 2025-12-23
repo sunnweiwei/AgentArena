@@ -30,7 +30,7 @@ reasoning: Explain why the extracted_final_answer is correct or incorrect based 
 
 correct: Answer 'yes' if extracted_final_answer matches the [correct_answer] given above, contains all the essential information from [correct_answer], is equivalent despite minor wording/order differences (such as name order, inclusion or omission of middle names/initials, common honorifics, standard shortenings of first names, inclusion/omission of non-contradictory date parts like year, minor articles like "a"/"the", extra descriptive context, non-essential descriptive prefixes/suffixes such as "Restaurant", "Inc.", "Ltd.", or sports suffixes like "FC", "CF", "SC", inclusion/omission of subtitles in titles, minor spacing/punctuation differences — including presence/absence of quotation marks, interchangeable punctuation such as ":" / "-" / "–", case-only differences, or presence/absence of diacritics), or is within a small margin of error for numerical problems. Answer 'no' only if the extracted answer is factually incorrect, missing essential identifying information, or contradicts the [correct_answer].
 
-confidence: The extracted confidence score between 0|\%| and 100|\%| from [response]. Put 100 if there is no confidence score available.
+confidence: The extracted confidence score between 0% and 100% from [response]. Put 100 if there is no confidence score available.
 """.strip()
 
 
@@ -255,6 +255,8 @@ def keep_first_n_words(text: str, n: int = 1000) -> str:
 
 class AsyncSearchClient:
     def __init__(self, base_url: str, timeout: float = 300.0, retries: int = 3, backoff: float = 0.5):
+        if base_url is None:
+            base_url = os.getenv("LOCAL_SEARCH_URL", "http://localhost:8010")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.retries = retries
@@ -371,15 +373,20 @@ class LocalSearch:
         self.stats['visit_pages'] = 0
         self.env_fail = False
 
-        base_url = os.getenv("LOCAL_SEARCH_URL")
+        base_url = os.getenv("LOCAL_SEARCH_URL", "http://localhost:8010")
 
         self.client = AsyncSearchClient(base_url=base_url)
         self.question = None
         self.label_answer = None
         self.predicted_answer = None
-        self.double_check = getattr(self.config.plugin, "double_check", False)
+        # Handle None config gracefully
+        if self.config and hasattr(self.config, 'plugin'):
+            self.double_check = getattr(self.config.plugin, "double_check", False)
+            self.must_search = getattr(self.config.plugin, "must_search", True)
+        else:
+            self.double_check = False
+            self.must_search = True
         self.donotgiveup = False
-        self.must_search = getattr(self.config.plugin, "must_search", True)
         self.visited_pages = set()
         self.is_finish = False
 
@@ -423,8 +430,12 @@ class LocalSearch:
     async def run_action(self, response):
         self.stats['action'] += 1
         if isinstance(response, dict):
+            fn_call = [response]
+        elif isinstance(response, list):
+            # Already a list of function calls
             fn_call = response
         else:
+            # Try to extract from string
             fn_call = extract_fn_call(response)
 
         if fn_call is None or len(fn_call) == 0:
@@ -433,7 +444,11 @@ class LocalSearch:
         else:
             observation = ''
             for fn in fn_call:
-                name = fn['function']
+                # Handle both 'name' and 'function' keys for compatibility
+                name = fn.get('name') or fn.get('function')
+                if not name:
+                    observation += '[Error] Function call missing name/function field.\n'
+                    continue
                 if name == 'search':
                     self.stats['search'] += 1
                     self.stats['is_search'] = 1
@@ -541,7 +556,7 @@ Take Corrective Action: If you notice any gaps or unsupported points, revisit th
 Once you’re confident everything is covered and verified, submit the final answer and include enough citations for all supporting evidence."""
                         self.double_check = False
                         return {'observation': observation.strip()}
-                    return {'action': 'finish'}
+                    return {'observation': 'finish'}
                 else:
                     # Clearer error for unsupported functions
                     observation = f'[Error] The function "{name}" is not supported.'
@@ -636,12 +651,31 @@ def create_env(question=None, label_answer=None):
 
 
 async def env_step(env: LocalSearch, fn_call):
-    return await env_step(env, fn_call)
+    # env_step receives a single function call dict from runtime_server
+    # but run_action expects a list of function calls, so wrap it
+    if isinstance(fn_call, dict):
+        fn_call = [fn_call]
+    observation = await env.run_action(fn_call)
+    return observation['observation']
 
-async def get_reward(env: LocalSearch, label_answer=None, **kwargs):
+async def get_reward(env: LocalSearch, label_answer=None, predicted_answer=None, explanation=None, confidence=None, **kwargs):
     if label_answer:
         env.label_answer = label_answer
-    return await env.get_reward(None, None, None)
+    if predicted_answer:
+        # predicted_answer can be a string (just the answer) or already a tuple
+        # If it's a string and we have explanation/confidence, construct the tuple
+        if isinstance(predicted_answer, str):
+            if explanation is not None and confidence is not None:
+                env.predicted_answer = (predicted_answer, explanation, confidence)
+            else:
+                # If no explanation/confidence provided, use empty strings
+                env.predicted_answer = (predicted_answer, "", "")
+        else:
+            # Already a tuple, use as is
+            env.predicted_answer = predicted_answer
+    # LocalSearch.get_reward returns (message, reward, {})
+    result = await env.get_reward(None, None, None)
+    return result[1]  # Return the reward value
 
 
 def close_env(env):

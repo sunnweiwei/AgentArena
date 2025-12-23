@@ -49,8 +49,68 @@ export function getLastCanvasContent(messages) {
 }
 
 /**
+ * Parse function calls from text (used only for content outside of tool blocks)
+ */
+function parseFunctionCalls(text) {
+  const parts = []
+  let position = 0
+  
+  const functionRegex = /<function=([^>]+)>\s*(.*?)\s*<\/function>/gs
+  const matches = [...text.matchAll(functionRegex)]
+  
+  for (const match of matches) {
+    const startIndex = match.index
+    const endIndex = startIndex + match[0].length
+    
+    // Add text before this match
+    if (startIndex > position) {
+      const textBefore = text.substring(position, startIndex)
+      if (textBefore.trim()) {
+        parts.push({ type: 'text', content: textBefore })
+      }
+    }
+    
+    const functionName = match[1]
+    const paramsXml = match[2]
+    
+    // Extract parameters
+    const paramRegex = /<parameter=([^>]+)>(.*?)<\/parameter>|<parameter>(.*?)<\/parameter>/gs
+    const params = {}
+    let paramMatch
+    while ((paramMatch = paramRegex.exec(paramsXml)) !== null) {
+      if (paramMatch[1]) {
+        params[paramMatch[1]] = paramMatch[2].trim()
+      } else if (paramMatch[3]) {
+        if (!params._unnamed) params._unnamed = []
+        params._unnamed.push(paramMatch[3].trim())
+      }
+    }
+    
+    parts.push({
+      type: 'tool-call',
+      functionName: functionName,
+      params: params,
+      isStandalone: true
+    })
+    
+    position = endIndex
+  }
+  
+  // Add remaining text
+  if (position < text.length) {
+    const textAfter = text.substring(position)
+    if (textAfter.trim()) {
+      parts.push({ type: 'text', content: textAfter })
+    }
+  }
+  
+  return parts
+}
+
+/**
  * Parse agent markup from message content
  * Handles <|think|>, <|tool|> tags and extracts tool calls from XML format
+ * Note: Function calls are NOT extracted from inside <|tool|> blocks
  * Note: Canvas content should be extracted separately using extractCanvasContent
  */
 export function parseAgentMarkup(content) {
@@ -63,65 +123,41 @@ export function parseAgentMarkup(content) {
   const parts = []
   let position = 0
 
-  // Find all special tags in order: <|think|>, <|tool|>, and <function=...>
-  const specialRegex = /<\|(think|tool)\|>(.*?)<\|\/\1\|>|<function=([^>]+)>\s*(.*?)\s*<\/function>/gs
-
-  const matches = [...content.matchAll(specialRegex)]
+  // First pass: find <|think|> and <|tool|> blocks only
+  const blockRegex = /<\|(think|tool)\|>(.*?)<\|\/\1\|>/gs
+  const matches = [...content.matchAll(blockRegex)]
 
   for (const match of matches) {
     const startIndex = match.index
     const endIndex = startIndex + match[0].length
 
-    // Add text before this match
+    // Process text before this block (may contain function calls)
     if (startIndex > position) {
       const textBefore = content.substring(position, startIndex)
       if (textBefore.trim()) {
-        parts.push({ type: 'text', content: textBefore })
+        // Parse function calls from text outside of tool blocks
+        const textParts = parseFunctionCalls(textBefore)
+        parts.push(...textParts)
       }
     }
 
     if (match[1] === 'think') {
-      // Think block
+      // Think block - keep as is
       parts.push({ type: 'think', content: match[2] })
     } else if (match[1] === 'tool') {
-      // Tool results block (content inside <|tool|>)
+      // Tool results block - DO NOT parse function calls inside
       parts.push({ type: 'tool-results', content: match[2] })
-    } else if (match[3]) {
-      // Function call (standalone <function=...>)
-      const functionName = match[3]
-      const paramsXml = match[4]
-      
-      // Extract parameters
-      const paramRegex = /<parameter=([^>]+)>(.*?)<\/parameter>|<parameter>(.*?)<\/parameter>/gs
-      const params = {}
-      let paramMatch
-      while ((paramMatch = paramRegex.exec(paramsXml)) !== null) {
-        if (paramMatch[1]) {
-          // Named parameter
-          params[paramMatch[1]] = paramMatch[2].trim()
-        } else if (paramMatch[3]) {
-          // Unnamed parameter (use as first unnamed param)
-          if (!params._unnamed) params._unnamed = []
-          params._unnamed.push(paramMatch[3].trim())
-        }
-      }
-      
-      parts.push({
-        type: 'tool-call',
-        functionName: functionName,
-        params: params,
-        isStandalone: true
-      })
     }
 
     position = endIndex
   }
 
-  // Add remaining text
+  // Process remaining text after last block (may contain function calls)
   if (position < content.length) {
     const textAfter = content.substring(position)
     if (textAfter.trim()) {
-      parts.push({ type: 'text', content: textAfter })
+      const textParts = parseFunctionCalls(textAfter)
+      parts.push(...textParts)
     }
   }
 

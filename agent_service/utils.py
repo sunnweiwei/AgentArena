@@ -39,9 +39,45 @@ def extract_fn_call(text):
     if not text:
         return None
     text = re.split(r'<\[[^\]]+\]>', text)[-1].strip()
-    matches = list(re.finditer(r'(?m)^[ \t]*<function=([^>]+)>\s*(.*?)\s*</function>',
-                               text, re.DOTALL))
+
+    matches = list(re.finditer(
+        r'(?m)^[ \t]*<function=([^>]+)>\s*(.*?)\s*</function>',
+        text,
+        re.DOTALL
+    ))
+
+    # NEW: detect "started a tool call but didn't close tags" (e.g., missing </parameter> or </function>)
     if not matches:
+        fn_start = re.search(r'(?m)^[ \t]*<function=([^>]+)>', text)
+        if fn_start:
+            fn_name = fn_start.group(1)
+            open_params = len(re.findall(r'<parameter=[^>]+>', text))
+            close_params = len(re.findall(r'</parameter>', text))
+            has_close_function = bool(re.search(r'</function>', text))
+
+            if (open_params != close_params) or (not has_close_function):
+                return {
+                    'error': f"""**Tool Call Format Error**
+
+It looks like you started a tool call but didn’t close one or more tags (e.g., missing `</parameter>` and/or `</function>`).
+
+**Your format (WRONG):**
+```
+<function={fn_name}>
+<parameter=query>...
+<parameter=topk>10
+```
+
+**Correct format:**
+```
+<function={fn_name}>
+<parameter=query>...</parameter>
+<parameter=topk>10</parameter>
+</function>
+```
+
+Please make sure every `<parameter=...>` has a matching `</parameter>`, and every `<function=...>` has a closing `</function>`."""
+                }
         return None
 
     # Check for wrong format: <param_name>value</param_name> instead of <parameter=param_name>value</parameter>
@@ -89,11 +125,15 @@ Please use `<parameter=PARAM_NAME>value</parameter>` format for all parameters."
     return [
         {
             'name': m.group(1),  # <-- each call uses its *own* captured fn name
-            'arguments': dict(re.findall(r'<parameter=([^>]+)>(.*?)</parameter>',
-                                         m.group(2), re.DOTALL))
+            'arguments': dict(re.findall(
+                r'<parameter=([^>]+)>(.*?)</parameter>',
+                m.group(2),
+                re.DOTALL
+            ))
         }
         for m in last
     ]
+
 
 
 
@@ -111,6 +151,7 @@ class BaseEnv:
         self.params = params
         self.runtime_id = None
         self.meta_info = None
+        self.env_type = "tau"  # Default, subclasses should override
 
     def _request_with_retry(self, method, url, **kwargs):
         """Make HTTP request with retry logic (30s total timeout)."""
@@ -162,12 +203,14 @@ class BaseEnv:
             return {'exists': False, 'has_ping': False, 'ping_result': None, 'meta_info': None,
                     'message': f'Ping error: {str(e)}'}
 
-    def create(self):
+    def create(self, env_type=None):
         """Create new runtime environment with retry."""
+        if env_type is None:
+            env_type = self.env_type
         params = self.params
         response = self._request_with_retry(
             'POST', f"{RUNTIME_SERVICE_URL}/create",
-            json={"env_type": "tau", "params": json.dumps(params)},
+            json={"env_type": env_type, "params": json.dumps(params)},
             timeout=300
         )
         result = response.json()
@@ -184,11 +227,11 @@ class BaseEnv:
         )
         return response.json()['result']
 
-    def get_reward(self):
+    def get_reward(self, **kwargs):
         """Get reward from environment with retry."""
         response = self._request_with_retry(
             'POST', f"{RUNTIME_SERVICE_URL}/reward",
-            json={"runtime_id": self.runtime_id, "params": "{}"},
+            json={"runtime_id": self.runtime_id, "params": json.dumps(kwargs)},
             timeout=30
         )
         return response.json()['reward']

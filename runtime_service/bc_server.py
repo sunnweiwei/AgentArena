@@ -216,8 +216,13 @@ def optimized_worker(gpu_id: int, batch_queue: mp.Queue, result_queue: mp.Queue,
 
         # Load model
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, padding_side='left')
-        model = AutoModel.from_pretrained(MODEL_NAME, torch_dtype=torch.bfloat16,
-                                          attn_implementation="flash_attention_2").to(device)
+        # Try flash_attention_2, fallback to default if not available
+        try:
+            model = AutoModel.from_pretrained(MODEL_NAME, torch_dtype=torch.bfloat16,
+                                              attn_implementation="flash_attention_2").to(device)
+        except Exception as e:
+            print(f"FlashAttention2 not available, using default: {e}")
+            model = AutoModel.from_pretrained(MODEL_NAME, torch_dtype=torch.bfloat16).to(device)
         model.eval()
 
         # Load corpus embeddings

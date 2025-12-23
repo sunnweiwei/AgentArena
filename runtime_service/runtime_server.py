@@ -411,7 +411,12 @@ async def create_environment(request: CreateEnvRequest):
     except ImportError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create environment: {str(e)}")
+        import traceback
+        error_detail = f"Failed to create environment: {str(e)}"
+        print(f"Error in create_environment: {e!r}")
+        print(f"Create error type: {type(e).__name__}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=error_detail)
 
 
 @app.post("/step", response_model=StepResponse)
@@ -468,7 +473,12 @@ async def get_reward(request: RewardRequest):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get reward: {str(e)}")
+        import traceback
+        error_detail = f"Failed to get reward: {str(e)}"
+        print(f"Error in get_reward endpoint: {e!r}")
+        print(f"Reward error type: {type(e).__name__}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=error_detail)
 
 
 @app.post("/ping", response_model=PingResponse)
