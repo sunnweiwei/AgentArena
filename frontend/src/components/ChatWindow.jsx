@@ -822,6 +822,12 @@ const ChatWindow = ({
       return
     }
 
+    // Prevent duplicate sends - if already streaming, ignore this call
+    if (isStreaming) {
+      console.warn('Message already being sent, ignoring duplicate send')
+      return
+    }
+
     const tempId = generateClientId()
     const clientId = tempId
     setMessages(prev => [
@@ -837,10 +843,12 @@ const ChatWindow = ({
       }
     ])
 
+    // Set streaming state IMMEDIATELY to prevent duplicate sends
+    setIsStreaming(true)  // Show stop button immediately and prevent duplicate sends
+    
     const waitingId = generateClientId()
     streamingMessageIdRef.current = waitingId
     activeStreamIdRef.current = waitingId  // Set immediately so stop button shows
-    setIsStreaming(true)  // Show stop button immediately
     pendingWaitingMessageIdsRef.current.push(waitingId)
     setMessages(prev => [
       ...prev,
@@ -891,6 +899,7 @@ const ChatWindow = ({
         createdAt: new Date().toISOString()
       }
       onChatPendingStateChange?.(chatId, true)
+      // Keep isStreaming true since message will be sent when connection is ready
       return
     }
 

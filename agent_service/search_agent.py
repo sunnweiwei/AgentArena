@@ -1,12 +1,7 @@
-from pydantic import BaseModel
-from typing import List, Dict, Optional
-import json
-import re
-
 from tool_handler import ToolHandler
-from tool_prompt import convert_tools_to_description, TOOL_PROMPT, extract_fn_call, search_tool, get_mcp_tools
+from tool_prompt import convert_tools_to_description, TOOL_PROMPT, search_tool, get_mcp_tools
 from prompter import CHATGPT_PROMPT, SEARCH_PROMPT
-from utils import call_openai
+from utils import call_openai, keep_first_n_words, split_agent_markup
 
 MODEL_MAPPING = {
     'Auto': 'gpt-5-mini',
@@ -16,45 +11,6 @@ MODEL_MAPPING = {
     'GPT-5 mini (Search)': 'gpt-5-mini',
     'GPT-5.2 (Search)': 'gpt-5'
 }
-
-_TAG_RE = re.compile(r"<\|(think|tool)\|>(.*?)<\|/\1\|>", re.DOTALL)
-
-
-def split_agent_markup(s: str) -> List[Dict[str, str]]:
-    out: List[Dict[str, str]] = []
-    last = 0
-    for m in _TAG_RE.finditer(s):
-        if m.start() > last:
-            txt = s[last:m.start()]
-            if txt:
-                out.append({"role": "text", "content": txt})
-        role = m.group(1)
-        content = m.group(2)
-        out.append({"role": role, "content": content})
-        last = m.end()
-
-    if last < len(s):
-        txt = s[last:]
-        if txt:
-            out.append({"role": "text", "content": txt})
-    merged: List[Dict[str, str]] = []
-    for chunk in out:
-        if merged and merged[-1]["role"] == chunk["role"]:
-            merged[-1]["content"] += chunk["content"]
-        else:
-            merged.append(chunk)
-    return merged
-
-
-def keep_first_n_words(text: str, n: int = 1000) -> str:
-    if not text:
-        return ""
-    count = 0
-    for m in re.finditer(r'\S+', text):
-        count += 1
-        if count == n:
-            return text[:m.end()] + '\n[Document is truncated.]'
-    return text
 
 
 def condense_history(conversation):

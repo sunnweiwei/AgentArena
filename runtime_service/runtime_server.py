@@ -2,21 +2,12 @@ import uuid
 import json
 import asyncio
 import time
-from typing import Dict, Any, Optional
+import inspect
+from typing import Dict, Any, Optional, Callable
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import uvicorn
 from contextlib import asynccontextmanager
-
-
-# Environment Module Registry
-# Maps env_type to module name
-ENV_MODULE_REGISTRY = {
-    'tau': 'tau_env',
-    # Add more environment types here
-    # 'custom': 'custom_env',
-    # 'game': 'game_env',
-}
 
 
 def load_env_module(env_type: str):
@@ -27,12 +18,29 @@ def load_env_module(env_type: str):
     if env_type == 'tau':
         import tau_env
         return tau_env
+    elif env_type == 'bc':
+        import bc_env
+        return bc_env
     # Add more elif blocks for other environment types
     # elif env_type == 'custom':
     #     import custom_env
     #     return custom_env
     else:
-        raise ValueError(f"Unknown env_type: {env_type}. Available types: {list(ENV_MODULE_REGISTRY.keys())}")
+        raise ValueError(f"Unknown env_type: {env_type}.")
+
+
+async def call_sync_or_async(func: Callable, *args, **kwargs):
+    """
+    Helper function to call either sync or async functions.
+    - If function is async (coroutine function), await it directly
+    - If function is sync, run it in thread pool to avoid blocking
+    """
+    if inspect.iscoroutinefunction(func):
+        # Function is async, await it directly
+        return await func(*args, **kwargs)
+    else:
+        # Function is sync, run in thread pool to avoid blocking event loop
+        return await asyncio.to_thread(func, *args, **kwargs)
 
 
 # Request/Response Models - All use string-based JSON
@@ -98,7 +106,8 @@ class RuntimeManager:
         Create a new environment from env_type and JSON params string.
         Returns (runtime_id, meta_info_json_string)
 
-        Runs in thread pool to avoid blocking event loop (can take minutes)
+        Supports both async and sync create_env functions.
+        Async functions are awaited directly, sync functions run in thread pool.
         """
         # Generate unique runtime ID
         runtime_id = str(uuid.uuid4())
@@ -112,11 +121,8 @@ class RuntimeManager:
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in params: {e}")
 
-        # Create environment in thread pool (this can be VERY slow - 5+ minutes)
-        def _create_env_blocking():
-            return env_module.create_env(**params)
-
-        env, meta_info = await asyncio.to_thread(_create_env_blocking)
+        # Create environment (supports both async and sync)
+        env, meta_info = await call_sync_or_async(env_module.create_env, **params)
 
         # Store environment (dict assignment is atomic in CPython)
         self.environments[runtime_id] = {
@@ -135,7 +141,8 @@ class RuntimeManager:
         Execute a step in the environment.
         Returns JSON string with result.
 
-        Runs in thread pool to avoid blocking event loop (can take 10+ minutes)
+        Supports both async and sync env_step functions.
+        Async functions are awaited directly, sync functions run in thread pool.
         """
         # Quick dict lookup (thread-safe read in CPython)
         env_data = self.environments.get(runtime_id)
@@ -154,24 +161,22 @@ class RuntimeManager:
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in params: {e}")
 
-        # Execute step in thread pool (this can be VERY slow - 10+ minutes)
-        # This allows multiple slow steps to run in parallel without blocking!
-        def _step_blocking():
-            result = env_module.env_step(env, params)
-            # Convert result to JSON string if it isn't already
-            if isinstance(result, str):
-                return result
-            else:
-                return json.dumps(result)
+        # Execute step (supports both async and sync)
+        result = await call_sync_or_async(env_module.env_step, env, params)
 
-        return await asyncio.to_thread(_step_blocking)
+        # Convert result to JSON string if it isn't already
+        if isinstance(result, str):
+            return result
+        else:
+            return json.dumps(result)
 
     async def get_reward(self, runtime_id: str, params_str: str = "{}") -> float:
         """
         Get reward from the environment.
         Returns reward value.
 
-        Runs in thread pool to avoid blocking event loop
+        Supports both async and sync get_reward functions.
+        Async functions are awaited directly, sync functions run in thread pool.
         """
         # Quick dict lookup (thread-safe read in CPython)
         env_data = self.environments.get(runtime_id)
@@ -190,16 +195,15 @@ class RuntimeManager:
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in params: {e}")
 
-        # Get reward in thread pool (can be slow)
-        def _get_reward_blocking():
-            return env_module.get_reward(env, **params)
-
-        return await asyncio.to_thread(_get_reward_blocking)
+        # Get reward (supports both async and sync)
+        return await call_sync_or_async(env_module.get_reward, env, **params)
 
     async def ping(self, runtime_id: str) -> dict:
         """
         Ping an environment to check if it's alive.
         Calls env.ping() if available and returns meta_info.
+
+        Supports both async and sync ping methods.
         """
         # Check if runtime exists
         env_data = self.environments.get(runtime_id)
@@ -228,16 +232,16 @@ class RuntimeManager:
                 'message': 'Environment exists but has no ping() method'
             }
 
-        # Call ping in thread pool (might be slow)
-        def _ping_blocking():
-            result = env.ping()
-            if isinstance(result, str):
-                return result
-            else:
-                return json.dumps(result)
-
+        # Call ping (supports both async and sync)
         try:
-            ping_result = await asyncio.to_thread(_ping_blocking)
+            result = await call_sync_or_async(env.ping)
+
+            # Convert result to JSON string if it isn't already
+            if isinstance(result, str):
+                ping_result = result
+            else:
+                ping_result = json.dumps(result)
+
             return {
                 'exists': True,
                 'has_ping': True,
@@ -254,10 +258,10 @@ class RuntimeManager:
                 'message': f'Ping failed: {str(e)}'
             }
 
-    def stop(self, runtime_id: str) -> bool:
+    async def stop(self, runtime_id: str) -> bool:
         """
         Stop and cleanup environment using env-specific close function.
-        No lock needed - dict operations are atomic in CPython (GIL).
+        Supports both async and sync close functions.
         """
         if runtime_id not in self.environments:
             return False
@@ -269,10 +273,10 @@ class RuntimeManager:
 
         # Try to use env_module's close_env function first
         if env_module and hasattr(env_module, 'close_env'):
-            env_module.close_env(env)
+            await call_sync_or_async(env_module.close_env, env)
         # Otherwise fall back to env.close() if available
         elif hasattr(env, 'close'):
-            env.close()
+            await call_sync_or_async(env.close)
 
         # Remove from storage (atomic operation in CPython)
         del self.environments[runtime_id]
@@ -313,31 +317,34 @@ class RuntimeManager:
                 # Stop idle environments
                 for runtime_id, idle_time in idle_environments:
                     print(f"Auto-stopping idle environment {runtime_id} (idle for {idle_time/3600:.1f} hours)")
-                    self.stop(runtime_id)
+                    await self.stop(runtime_id)
 
             except Exception as e:
                 print(f"Error in cleanup task: {e}")
 
     async def cleanup_all(self):
-        """Cleanup all environments using env-specific close functions"""
-        def _cleanup_blocking():
-            # Get snapshot of runtime_ids to avoid iteration issues
-            runtime_ids = list(self.environments.keys())
-            for runtime_id in runtime_ids:
-                env_data = self.environments.get(runtime_id)
-                if env_data:
-                    env = env_data['env']
-                    env_module = env_data.get('env_module')
-                    # Try to use env_module's close_env function first
-                    if env_module and hasattr(env_module, 'close_env'):
-                        env_module.close_env(env)
-                    # Otherwise fall back to env.close() if available
-                    elif hasattr(env, 'close'):
-                        env.close()
-            # Clear all at once
-            self.environments.clear()
+        """
+        Cleanup all environments using env-specific close functions.
+        Supports both async and sync close functions.
+        """
+        # Get snapshot of runtime_ids to avoid iteration issues
+        runtime_ids = list(self.environments.keys())
 
-        await asyncio.to_thread(_cleanup_blocking)
+        for runtime_id in runtime_ids:
+            env_data = self.environments.get(runtime_id)
+            if env_data:
+                env = env_data['env']
+                env_module = env_data.get('env_module')
+
+                # Try to use env_module's close_env function first
+                if env_module and hasattr(env_module, 'close_env'):
+                    await call_sync_or_async(env_module.close_env, env)
+                # Otherwise fall back to env.close() if available
+                elif hasattr(env, 'close'):
+                    await call_sync_or_async(env.close)
+
+        # Clear all at once
+        self.environments.clear()
 
     def start_cleanup_task(self):
         """Start the background cleanup task"""
@@ -486,7 +493,8 @@ async def ping_environment(request: PingRequest):
 @app.post("/stop", response_model=StopResponse)
 async def stop_environment(request: StopRequest):
     """
-    Stop and cleanup a runtime environment (fast, synchronous).
+    Stop and cleanup a runtime environment.
+    Supports both async and sync close functions.
 
     Example:
     {
@@ -494,7 +502,7 @@ async def stop_environment(request: StopRequest):
     }
     """
     try:
-        success = runtime_manager.stop(request.runtime_id)
+        success = await runtime_manager.stop(request.runtime_id)
 
         if success:
             return StopResponse(
@@ -518,7 +526,6 @@ async def health_check():
     return {
         "status": "healthy",
         "active_environments": len(runtime_manager.environments),
-        "available_env_types": list(ENV_MODULE_REGISTRY.keys()),
     }
 
 
@@ -538,31 +545,6 @@ async def list_environments():
         "environments": envs
     }
 
-
-@app.get("/env-types")
-async def list_env_types():
-    """List all available environment types and their metadata"""
-    env_types_info = {}
-
-    for env_type in ENV_MODULE_REGISTRY.keys():
-        try:
-            module = load_env_module(env_type)
-            meta_info = getattr(module, 'meta_info', 'No description available')
-            env_types_info[env_type] = {
-                "module": ENV_MODULE_REGISTRY[env_type],
-                "meta_info": meta_info,
-                "available": True
-            }
-        except (ImportError, ValueError) as e:
-            env_types_info[env_type] = {
-                "module": ENV_MODULE_REGISTRY[env_type],
-                "meta_info": f"Module not available: {e}",
-                "available": False
-            }
-
-    return {
-        "env_types": env_types_info
-    }
 
 
 if __name__ == "__main__":
