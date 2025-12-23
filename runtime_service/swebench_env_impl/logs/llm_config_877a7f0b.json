@@ -1,0 +1,5 @@
+{
+  "model": "gpt-4o-mini",
+  "base_url": "http://localhost:8057/v1",
+  "api_key": "not-needed"
+}
