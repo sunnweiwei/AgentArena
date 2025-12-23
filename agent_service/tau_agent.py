@@ -13,23 +13,15 @@ RUNTIME_SERVICE_URL = os.getenv("RUNTIME_SERVICE_URL", "http://localhost:8005")
 
 # Load API keys
 OPENAI_API_KEY = None
-try:
-    key_path = os.path.join(os.path.dirname(__file__), '..', '..', 'openaikey')
-    if os.path.exists(key_path):
-        with open(key_path, 'r') as f:
-            OPENAI_API_KEY = f.read().strip()
-    else:
-        key_path = '/usr1/data/weiweis/chat_server/openaikey'
-        if os.path.exists(key_path):
-            with open(key_path, 'r') as f:
-                OPENAI_API_KEY = f.read().strip()
-except Exception as e:
-    print(f"Warning: Could not load OpenAI API key: {e}")
+# First try environment variable (from .env file loaded by uv run --env-file)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 openai_client = None
 if OPENAI_API_KEY:
     openai_client = OpenAI(api_key=OPENAI_API_KEY)
     print("OpenAI client initialized successfully")
+else:
+    print("WARNING: OpenAI API key not found. OpenAI client not initialized.")
 
 
 class Message(BaseModel):
