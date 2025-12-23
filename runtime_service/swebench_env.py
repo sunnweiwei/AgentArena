@@ -40,43 +40,52 @@ def create_env(
         "env_type": "swebench",
         "dataset_name": dataset_name,
         "split": split,
-        "instance_id": env.instance_id,
-        "repo": env.instance["repo"],
-        "base_commit": env.instance.get("base_commit"),
-        "initial_question": env.initial_question,
-        "problem_statement": env.instance.get("problem_statement"),
+        "instance_id": instance_id,
+        "interactive_api_url": env.interactive_api_url,
     }
 
     return env, json.dumps(meta)
 
 
+def get_observations(env: SweBenchInteractiveEnv) -> str:
+    """
+    Get the current observation/question from the workspace/server.
+    
+    The workspace sends questions to the interactive API service,
+    and this function retrieves them.
+    
+    Returns:
+        Observation string (the question/message from workspace)
+    """
+    return env.get_observations()
+
+
 def env_step(env: SweBenchInteractiveEnv, fn_call: dict) -> str:
     """
-    Execute a step in the SWE-bench environment.
-
+    Submit human response to the workspace/server.
+    
     This mirrors the tau_env signature:
         env_step(env, fn_call: dict) -> observation_str
-
+    
     fn_call is expected to have the structure:
         {
-          "name": "<tool_name_or_action>",
-          "arguments": { ... arbitrary JSON-serializable dict ... }
+          "response": "human's answer"  # or
+          "name": "<action>",
+          "arguments": { ... }
         }
-
-    In a typical interactive setup:
-      - The "observation" for the LLM is `initial_question` + history,
-      - The LLM outputs a tool call (same structure as above),
-      - The tool call is forwarded here as `fn_call`,
-      - This function produces a new textual observation string.
-
-    For now, we keep the implementation simple and focus on wiring; the
-    heavy SWE-bench / RemoteWorkspace integration lives in `swebench_env_impl`.
+    
+    In the interactive setup:
+      - Workspace sends question to interactive API service
+      - get_observations() retrieves the question
+      - Human provides answer via env_step()
+      - This function forwards the answer to workspace/server
+      - Returns result/confirmation from workspace
     """
-    observation = env.step(fn_call)
+    result = env.step(fn_call)
     # Ensure we always return a JSON string (for RuntimeManager.step)
-    if isinstance(observation, str):
-        return observation
-    return json.dumps(observation)
+    if isinstance(result, str):
+        return result
+    return json.dumps(result)
 
 
 def get_reward(env: SweBenchInteractiveEnv, **kwargs: Any) -> float:
