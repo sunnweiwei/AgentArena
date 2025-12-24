@@ -130,6 +130,9 @@ class SweBenchInteractiveEnv:
     interactive_api_url: str = field(default="", init=False)
     # Current pending request ID (set by get_observations)
     current_request_id: Optional[str] = field(default=None, init=False)
+    # Counter for tool call IDs
+    tool_call_counter: int = field(default=0, init=False)
+    last_observation: Optional[str] = field(default=None, init=False)
     
     def __post_init__(self) -> None:
         """Initialize interactive environment and start API service."""
@@ -162,7 +165,7 @@ class SweBenchInteractiveEnv:
         # This allows create_env() to return quickly while the task runs in the background
         def run_task_in_background():
             try:
-                from benchmarks.swebench.test_single_task import test_single_task
+                from runtime_service.swebench_env_impl.load_single_task import test_single_task
                 test_single_task(
                     instance_id=self.instance_id,
                     llm_config_path=self.llm_config_path,
@@ -175,6 +178,47 @@ class SweBenchInteractiveEnv:
         # Start background thread
         task_thread = threading.Thread(target=run_task_in_background, daemon=True)
         task_thread.start()
+    
+    def _calculate_observation_delta(self, current_observation):
+        """
+        Calculate the delta (new content) between current and last observation.
+        
+        Args:
+            current_observation: Current observation (can be list of messages or string)
+        
+        Returns:
+            Delta observation (new content only), can be list or string
+        """
+        if self.last_observation is None:
+            # First observation, return everything
+            if isinstance(current_observation, list):
+                return current_observation
+            else:
+                return current_observation
+        
+        # If both are lists (messages), find new messages
+        if isinstance(current_observation, list) and isinstance(self.last_observation, list):
+            # Compare message lists and return only new messages
+            last_len = len(self.last_observation)
+            if len(current_observation) > last_len:
+                # Return only the new messages
+                return current_observation[last_len:]
+            else:
+                # No new messages, return empty list
+                return []
+        
+        # If both are strings, find new text
+        elif isinstance(current_observation, str) and isinstance(self.last_observation, str):
+            # If current starts with last, return the suffix
+            if current_observation.startswith(self.last_observation):
+                return current_observation[len(self.last_observation):]
+            else:
+                # Different content, return current (safer to return all)
+                return current_observation
+        
+        # Mixed types or other cases, return current observation
+        else:
+            return current_observation
     
     def get_observations(self, timeout: float = 600.0, poll_interval: float = 1.0) -> str:
         """
@@ -205,17 +249,24 @@ class SweBenchInteractiveEnv:
                 ) as resp:
                     data = json.loads(resp.read().decode())
                     has_pending = data.get("has_pending", False)
-                    observation = data.get("observation", "")
+                    observation = data.get("observation", [])
                     
-                    # If there's a pending observation, save request_id and return it
+                    # If there's a pending observation, save request_id and return delta
                     # Check has_pending first, then check if observation is not the default "no pending" message
                     if has_pending:
                         # Save the request_id for use in step()
                         request_id = data.get("request_id")
                         if request_id:
                             self.current_request_id = request_id
-                        # Return observation even if it's empty (it will be formatted by format_messages_for_display)
-                        return observation if observation else "Pending request available (messages being formatted)"
+                        
+                        # Calculate delta: new observation minus last observation
+                        delta_observation = self._calculate_observation_delta(observation)
+                        
+                        # Save current observation as last_observation for next time
+                        self.last_observation = observation
+                        
+                        # Return delta (new messages only)
+                        return delta_observation
                     
                     # Check timeout
                     elapsed = time.time() - start_time
@@ -253,6 +304,7 @@ class SweBenchInteractiveEnv:
         Returns:
             Result string confirming the response was submitted, or error message
         """
+        print(f"step: {fn_call}")
         import urllib.request
         
         # Use the request_id from the last get_observations() call
@@ -268,21 +320,39 @@ class SweBenchInteractiveEnv:
             # Tool call format - convert to a readable response
             tool_name = fn_call["name"]
             tool_args = fn_call["arguments"]
-            human_response = f"Tool call: {tool_name}\nArguments: {json.dumps(tool_args, indent=2)}"
-        elif "response" in fn_call:
-            human_response = fn_call["response"]
-        elif "content" in fn_call:
-            human_response = fn_call["content"]
+            # Convert arguments to JSON string if it's a dict
+            if isinstance(tool_args, dict):
+                arguments_str = json.dumps(tool_args)
+            elif isinstance(tool_args, str):
+                arguments_str = tool_args
+            else:
+                arguments_str = json.dumps(tool_args)
+            
+            # Increment counter and use it for tool call ID
+            self.tool_call_counter += 1
+            tool_call_json = {
+                "id": str(self.tool_call_counter),
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": arguments_str
+                }
+            }
         else:
-            # Convert entire fn_call to JSON string
-            human_response = json.dumps(fn_call, indent=2)
+            tool_call_json = None
         
+        if "response" in fn_call:
+            human_response = fn_call["response"]
+
         # Submit response to the most recent request
         try:
             submit_data = {
                 "request_id": request_id,
-                "response": human_response
+                "response": human_response,
             }
+            if tool_call_json is not None:
+                submit_data["tool_calls"] = [tool_call_json]
+            print(submit_data)
             data = json.dumps(submit_data).encode('utf-8')
             req = urllib.request.Request(
                 f"{self.interactive_api_url}/submit_response",
@@ -292,15 +362,17 @@ class SweBenchInteractiveEnv:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 result = json.loads(resp.read().decode())
                 if result.get("success", False):
-                    return f"Response submitted successfully to request {request_id}"
+                    print(f"Response submitted successfully to request {request_id}")
                 else:
-                    return f"Failed to submit response: {result.get('error', 'Unknown error')}"
+                    print(f"Failed to submit response: {result.get('error', 'Unknown error')}")
         except urllib.error.HTTPError as e:
             error_body = e.read().decode() if e.fp else "No error details"
-            return f"HTTP error submitting response: {e.code} - {error_body}"
+            print(f"HTTP error submitting response: {e.code} - {error_body}")
         except Exception as e:
-            return f"Error submitting response: {e}"
-    
+            print(f"Error submitting response: {e}")
+
+        return self.get_observations()
+
     def get_reward(self, **kwargs: Any) -> float:
         """
         Get the current reward for the environment.
@@ -322,9 +394,76 @@ class SweBenchInteractiveEnv:
     
     def close(self) -> None:
         """Cleanup interactive API service and temporary files."""
-        # Stop interactive API service if running
+        # Check for pending chat-completion requests and submit empty responses
         if self.interactive_api_process is not None:
             try:
+                # Check status to see if there are pending requests
+                import urllib.request
+                status_url = f"{self.interactive_api_url}/status"
+                
+                # Loop until no pending requests remain
+                max_iterations = 10  # Maximum number of iterations to avoid infinite loop
+                iteration = 0
+                
+                while iteration < max_iterations:
+                    try:
+                        with urllib.request.urlopen(status_url, timeout=2) as resp:
+                            status_data = json.loads(resp.read().decode())
+                            pending_count = status_data.get("pending_requests", 0)
+                            pending_request_ids = status_data.get("pending_request_ids", [])
+                            
+                            if pending_count == 0:
+                                print(f"[Close] No pending requests remaining.", flush=True)
+                                break
+                            
+                            print(f"[Close] Found {pending_count} pending chat-completion request(s), submitting empty responses...", flush=True)
+                            
+                            # Submit finish action for each pending request
+                            for request_id in pending_request_ids:
+                                try:
+                                    # Create finish tool call
+                                    finish_tool_call = {
+                                        "id": "0",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "finish",
+                                            "arguments": json.dumps({"message": "[closed] Environment is closing. Task terminated."})
+                                        }
+                                    }
+                                    
+                                    submit_data = {
+                                        "request_id": request_id,
+                                        "response": "",  # Empty response text
+                                        "tool_calls": [finish_tool_call]  # Finish action
+                                    }
+                                    data = json.dumps(submit_data).encode('utf-8')
+                                    req = urllib.request.Request(
+                                        f"{self.interactive_api_url}/submit_response",
+                                        data=data,
+                                        headers={'Content-Type': 'application/json'}
+                                    )
+                                    with urllib.request.urlopen(req, timeout=5) as submit_resp:
+                                        result = json.loads(submit_resp.read().decode())
+                                        if result.get("success", False):
+                                            print(f"[Close] Submitted finish action for request {request_id}", flush=True)
+                                        else:
+                                            print(f"[Close] Failed to submit finish action for {request_id}: {result.get('error', 'Unknown error')}", flush=True)
+                                except Exception as e:
+                                    print(f"[Close] Error submitting finish action for {request_id}: {e}", flush=True)
+                            
+                            # Wait 2 seconds before checking again
+                            print(f"[Close] Waiting 2 seconds before checking again...", flush=True)
+                            time.sleep(2)
+                            iteration += 1
+                            
+                    except Exception as e:
+                        print(f"[Close] Could not check pending requests status: {e}", flush=True)
+                        break
+                
+                if iteration >= max_iterations:
+                    print(f"[Close] Reached maximum iterations ({max_iterations}), stopping check loop.", flush=True)
+                
+                # Now stop the interactive API service
                 self.interactive_api_process.terminate()
                 self.interactive_api_process.wait(timeout=5)
             except subprocess.TimeoutExpired:

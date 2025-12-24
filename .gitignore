@@ -42,3 +42,4 @@ openaikey
 # Files with hardcoded API keys
 agent_service/search/test.py
 agent_service/search/server.py
+runtime_service/swebench_env_impl/logs/*

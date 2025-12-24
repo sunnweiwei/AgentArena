@@ -43,7 +43,6 @@ def format_messages_for_display(messages):
             formatted.append(f"=== {role.upper()} ===\n{content}\n")
     return "\n".join(formatted)
 
-
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     """
@@ -62,6 +61,7 @@ async def chat_completions(request: Request):
     try:
         body = await request.json()
         messages = body.get("messages", [])
+        tools = body.get("tools", [])
         
         # Generate a unique request ID
         with request_lock:
@@ -72,7 +72,7 @@ async def chat_completions(request: Request):
         response_queue = Queue()
         
         # Store the request (messages and response queue)
-        pending_requests[request_id] = (messages, response_queue)
+        pending_requests[request_id] = (messages, tools, response_queue)
         
         # Log the new request
         print(f"\n[New pending request {request_id}] Created. Waiting for response via submit_response().", flush=True)
@@ -81,7 +81,7 @@ async def chat_completions(request: Request):
         # Use asyncio to avoid blocking the event loop
         timeout = 3600  # 1 hour timeout
         start_time = time.time()
-        user_input = None
+        response_data = None
         
         while time.time() - start_time < timeout:
             try:
@@ -89,30 +89,62 @@ async def chat_completions(request: Request):
                 # Run blocking queue.get() in a thread to avoid blocking event loop
                 loop = asyncio.get_event_loop()
                 try:
-                    user_input = await asyncio.wait_for(
-                        loop.run_in_executor(None, response_queue.get, 1),
+                    # Use timeout parameter correctly for queue.get()
+                    response_data = await asyncio.wait_for(
+                        loop.run_in_executor(None, lambda: response_queue.get(timeout=1)),
                         timeout=1.1  # Slightly longer than queue timeout
                     )
                     break
                 except asyncio.TimeoutError:
-                    # Queue is empty, continue waiting
+                    # asyncio timeout, continue waiting
                     await asyncio.sleep(0.1)  # Small async sleep to yield control
                     continue
             except Exception as e:
+                # Catch queue.Empty and other exceptions
+                from queue import Empty
+                if isinstance(e, Empty) or "Empty" in str(type(e)):
+                    # Queue is empty, continue waiting
+                    await asyncio.sleep(0.1)
+                    continue
                 # Other errors, log and continue
                 print(f"[Warning] Error waiting for response: {e}", flush=True)
                 await asyncio.sleep(0.1)
                 continue
         
-        # Clean up the pending request after getting response
+        # Clean up the pending request IMMEDIATELY after getting response
+        # This prevents duplicate submissions from finding the request
         if request_id in pending_requests:
             del pending_requests[request_id]
+            print(f"[Request {request_id}] Removed from pending_requests after receiving response", flush=True)
         
-        if user_input is None:
+        # Parse response data
+        if response_data is None:
             user_input = "[Timeout - no response received]"
+            tool_calls = []
             print(f"\n[Request {request_id}] Timeout waiting for response.", flush=True)
         else:
+            # Handle both old format (string) and new format (dict)
+            if isinstance(response_data, dict):
+                user_input = response_data.get("response", "")
+                tool_calls = response_data.get("tool_calls", [])
+            else:
+                # Backward compatibility: if it's a string, treat as old format
+                user_input = response_data
+                tool_calls = []
+            
             print(f"\n[Request {request_id}] Response received: {user_input[:100]}...", flush=True)
+            if tool_calls:
+                print(f"[Request {request_id}] Tool calls received: {len(tool_calls)} tool call(s)", flush=True)
+        
+        # Build message object
+        message = {
+            "role": "assistant",
+            "content": user_input
+        }
+
+        # Add tool_calls if present
+        if tool_calls:
+            message["tool_calls"] = tool_calls
         
         # Return OpenAI-compatible response
         return JSONResponse(
@@ -124,11 +156,8 @@ async def chat_completions(request: Request):
                 "model": "human",
                 "choices": [{
                     "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": user_input
-                    },
-                    "finish_reason": "stop"
+                    "message": message,
+                    "finish_reason": "tool_calls" if tool_calls else "stop"
                 }],
                 "usage": {
                     "prompt_tokens": 0,
@@ -156,7 +185,8 @@ async def status():
     return {
         "status": "running",
         "type": "interactive_human_api",
-        "pending_requests": len(pending_requests)
+        "pending_requests": len(pending_requests),
+        "pending_request_ids": list(pending_requests.keys())
     }
 
 
@@ -175,13 +205,16 @@ async def get_observation():
     # Get the most recent request (last one in dict)
     # Note: dicts maintain insertion order in Python 3.7+
     latest_request_id = list(pending_requests.keys())[-1]
-    messages, _ = pending_requests[latest_request_id]
+    messages, tools, _ = pending_requests[latest_request_id]
     
-    # Format messages as observation
-    observation = format_messages_for_display(messages)
+    tools_instruction = """You have the following tools available:\n"""
+    for tool in tools:
+        tools_instruction += json.dumps(tool)
+        tools_instruction += "\n\n"
+    messages.insert(1, {"role": "system", "content": tools_instruction})
     
     return {
-        "observation": observation,
+        "observation": messages,
         "request_id": latest_request_id,
         "has_pending": True
     }
@@ -202,6 +235,7 @@ async def submit_response(request: Request):
         body = await request.json()
         request_id = body.get("request_id")
         response = body.get("response", "")
+        tool_calls = body.get("tool_calls", [])
         
         if not request_id:
             return JSONResponse(
@@ -215,12 +249,26 @@ async def submit_response(request: Request):
                 content={"error": f"Request ID {request_id} not found"}
             )
         
-        _, response_queue = pending_requests[request_id]
+        messages, tools, response_queue = pending_requests[request_id]
         
-        # Put response in queue (this will wake up the waiting chat_completions)
-        response_queue.put(response)
+        # Check if queue is already full (meaning response was already submitted)
+        # This prevents duplicate submissions
+        if not response_queue.empty():
+            print(f"[Request {request_id}] WARNING: Queue already has data, previous response may not have been processed yet", flush=True)
+            # Still put the new response, but log a warning
+            # The chat_completions endpoint will only get the first one
+        
+        # Put response and tool_calls in queue (this will wake up the waiting chat_completions)
+        # Package both response and tool_calls together
+        response_data = {
+            "response": response,
+            "tool_calls": tool_calls if tool_calls else []
+        }
+        response_queue.put(response_data)
         
         print(f"[Request {request_id}] Response submitted: {response[:100]}...", flush=True)
+        if tool_calls:
+            print(f"[Request {request_id}] Tool calls submitted: {len(tool_calls)} tool call(s)", flush=True)
         
         return {
             "success": True,

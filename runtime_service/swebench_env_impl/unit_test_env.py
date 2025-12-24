@@ -87,18 +87,18 @@ def test_env_step(env):
     try:
         # 测试不同的响应格式
         test_cases = [
-            {"response": "I will read the file first to understand the codebase."},
-            {"name": "read_file", "arguments": {"path": "test.py"}},
-            {"content": "Let me check the repository structure."},
+            {"response": "I will read the file first to understand the codebase.", "name": "terminal", "arguments": {"command": "ls -la"}},
+            {"response": "I will read the file first to understand the codebase.", "name": "terminal", "arguments": {"command": "ls -all"}},
+        #    {"name": "read_file", "arguments": {"path": "test.py"}},
+        #    {"content": "Let me check the repository structure."},
         ]
         
         for i, fn_call in enumerate(test_cases, 1):
             print(f"\nTest case {i}: {fn_call}")
             result = swebench_env.env_step(env, fn_call)
             print(f"✓ Response submitted:")
-            print(f"  Result: {result[:200]}..." if len(result) > 200 else f"  Result: {result}")
-            
-            # 等待一下，避免请求过快
+            print(result)
+            print(type(result))
             time.sleep(1)
         
         return True

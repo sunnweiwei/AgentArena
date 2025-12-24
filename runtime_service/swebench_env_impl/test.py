@@ -6,7 +6,7 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from runtime_service.swebench_env_impl.core import SweBenchInteractiveEnv
-from benchmarks.swebench.test_single_task import test_single_task
+from runtime_service.swebench_env_impl.load_single_task import test_single_task
 
 # 启动交互式环境（会自动启动 API 服务）
 env = SweBenchInteractiveEnv(
