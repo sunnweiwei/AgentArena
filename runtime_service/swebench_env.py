@@ -85,8 +85,13 @@ def env_step(env: SweBenchInteractiveEnv, fn_call: dict) -> str:
     # Ensure we always return a JSON string (for RuntimeManager.step)
     if isinstance(result, str):
         return result
-    return json.dumps(result)
-
+    elif isinstance(result, list):
+        for i in range(len(result)):
+            if result[i].get("role", "") != "assistant":
+                return json.dumps(result[i:])
+        return json.dumps(result)
+    else:
+        raise ValueError(f"Invalid result type: {type(result)}")
 
 def get_reward(env: SweBenchInteractiveEnv, **kwargs: Any) -> float:
     """
@@ -108,7 +113,5 @@ def close_env(env: SweBenchInteractiveEnv) -> None:
     Currently a no-op, but provided to match the `tau_env` pattern and allow
     future resource cleanup (e.g., closing RemoteWorkspace handles).
     """
-    env.close()
-    return
-
-
+    reward = env.close()
+    return reward

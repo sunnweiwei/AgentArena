@@ -89,6 +89,18 @@ def test_env_step(env):
         test_cases = [
             {"response": "I will read the file first to understand the codebase.", "name": "terminal", "arguments": {"command": "ls -la"}},
             {"response": "I will read the file first to understand the codebase.", "name": "terminal", "arguments": {"command": "ls -all"}},
+            # Test writing a patch using file_editor
+            {
+                "response": "I will create a patch by modifying a file to fix the issue.",
+                "name": "file_editor",
+                "arguments": {
+                    "command": "str_replace",
+                    "path": "/workspace/django/django/urls/resolvers.py",
+                    "old_str": "def get_resolver(urlconf=None):",
+                    "new_str": "def get_resolver(urlconf=None):\n    # Optimization: look up settings.ROOT_URLCONF before memoized call\n    if urlconf is None:\n        from django.conf import settings\n        urlconf = settings.ROOT_URLCONF",
+                    "security_risk": "LOW"
+                }
+            },
         #    {"name": "read_file", "arguments": {"path": "test.py"}},
         #    {"content": "Let me check the repository structure."},
         ]

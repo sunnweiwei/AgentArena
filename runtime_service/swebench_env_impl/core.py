@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import random
 
 def _start_interactive_human_api_service(port: int = 8007) -> subprocess.Popen:
     """
@@ -81,10 +82,13 @@ def create_interactive_llm_config(interactive_api_url: str = "http://sf.lti.cs.c
     Returns:
         Dictionary with LLM configuration pointing to the interactive service
     """
+    local_time = time.localtime()
+    # format as DDHHMMSS_RANDOM[0-9999]
+    model_name = f"{local_time.tm_mday}{local_time.tm_hour}{local_time.tm_min}{local_time.tm_sec}_{random.randint(0, 9999)}"
     return {
-        "model": "gpt-4o-mini",  # Model name doesn't matter, but required by LLM class
+        "model": f"openai/gpt-{model_name}",
         "base_url": f"{interactive_api_url}/v1",
-        "api_key": "not-needed",  # Not used by interactive service, but required by LLM class
+        "api_key": "not-needed",
     }
 
 @dataclass
@@ -147,7 +151,7 @@ class SweBenchInteractiveEnv:
         )
         
         # Create LLM config file pointing to interactive service
-        llm_config_dict = create_interactive_llm_config(self.interactive_api_url)
+        self.llm_config_dict = create_interactive_llm_config(self.interactive_api_url)
         
         # Save to logs directory
         log_folder = Path(__file__).parent / "logs"
@@ -159,7 +163,7 @@ class SweBenchInteractiveEnv:
         self.llm_config_path = str(log_folder / config_filename)
         
         with open(self.llm_config_path, 'w') as f:
-            json.dump(llm_config_dict, f, indent=2)
+            json.dump(self.llm_config_dict, f, indent=2)
 
         # Start test_single_task in background thread to avoid blocking __post_init__
         # This allows create_env() to return quickly while the task runs in the background
@@ -259,6 +263,10 @@ class SweBenchInteractiveEnv:
                         if request_id:
                             self.current_request_id = request_id
                         
+                        if isinstance(observation, str):
+                            # decode the observation from json string to list of messages
+                            observation = json.loads(observation)
+
                         # Calculate delta: new observation minus last observation
                         delta_observation = self._calculate_observation_delta(observation)
                         
@@ -375,12 +383,84 @@ class SweBenchInteractiveEnv:
 
     def get_reward(self, **kwargs: Any) -> float:
         """
-        Get the current reward for the environment.
+        Get the current reward for the environment by testing if the patch passes.
         
-        In interactive mode, this is a placeholder that returns 0.0.
-        The actual reward would be computed by the workspace/server.
+        This method:
+        1. Finds the output file for the current instance
+        2. Reads the git patch from the output
+        3. Runs SWE-bench evaluation to test if the patch passes
+        4. Returns 1.0 if the patch passes, 0.0 otherwise
+        
+        Returns:
+            Reward value: 1.0 if patch passes tests, 0.0 otherwise
         """
-        return 0.0
+        if not self.instance_id:
+            print("[get_reward] No instance_id set, cannot test patch", flush=True)
+            return 0.0
+        
+        # Find output file based on instance_id
+        # Output files are typically in ./eval_outputs/<dataset>/<model_prefix>/<model_suffix>_sdk_.../output.jsonl
+        # Example: ./eval_outputs/princeton-nlp__SWE-bench_Verified-test/openai/gpt-2514711_1302_sdk_.../output.jsonl
+        # Use absolute path to avoid issues with working directory
+        # core.py is at: runtime_service/swebench_env_impl/core.py
+        # So: parent.parent.parent = project root
+        project_root = Path(__file__).parent.parent.parent
+        output_base_dir = project_root / "eval_outputs"
+        dataset_description = self.dataset_name.replace("/", "__") + "-" + self.split.replace("/", "__")
+        
+        # Extract model name from config (format: "openai/gpt-2514711_1302" -> "gpt-2514711_1302")
+        model_full = self.llm_config_dict['model']
+        # Extract the part after the last "/" if it exists
+        if '/' in model_full:
+            model_suffix = model_full.split('/')[-1]  # e.g., "gpt-2514711_1302"
+            model_prefix = model_full.split('/')[0]    # e.g., "openai"
+        else:
+            print(f"[get_reward] Model name doesn't contain '/', cannot determine prefix: {model_full}", flush=True)
+            return 0.0
+        
+        # Search for output files matching this instance_id
+        # Pattern: {dataset}/{model_prefix}/{model_suffix}*/output.jsonl (e.g., openai/gpt-2514711_1302_...)
+        pattern = f"{dataset_description}/{model_prefix}/{model_suffix}*/output.jsonl"
+        output_files = list(output_base_dir.glob(pattern))
+        
+        if not output_files:
+            print(f"[get_reward] No output files found for instance {self.instance_id}", flush=True)
+            print(f"[get_reward] Searched pattern: {pattern}", flush=True)
+            print(f"[get_reward] Base directory: {output_base_dir} (exists: {output_base_dir.exists()})", flush=True)
+            return 0.0
+        
+        # Get the most recent output file
+        output_file = max(output_files, key=lambda p: p.stat().st_mtime)
+        print(f"[get_reward] Checking output file: {output_file}", flush=True)
+        
+        # Run swebench-eval to generate evaluation result
+        import subprocess
+        result = subprocess.run(
+            ["uv", "run", "python", "-m", "benchmarks.swebench.eval_infer",
+             str(output_file), "--dataset", self.dataset_name, "--workers", "1"],
+            capture_output=True,
+            text=True,
+            timeout=600
+        )
+        if result.returncode != 0:
+            print(f"[get_reward] Error running swebench-eval: {result.stderr}", flush=True)
+            return 0.0
+        
+        # Read evaluation result from openhands.eval_output.swebench.json
+        eval_result_file = output_file.parent / "openhands.eval_output.swebench.json"
+        if not eval_result_file.exists():
+            print(f"[get_reward] Evaluation result file not found: {eval_result_file}", flush=True)
+            return 0.0
+        
+        try:
+            with open(eval_result_file, 'r') as f:
+                eval_result = json.load(f)
+            resolved_instances = eval_result.get("resolved_instances", 0)
+            print(f"[get_reward] Resolved instances: {resolved_instances}", flush=True)
+            return 1.0 if resolved_instances == 1 else 0.0
+        except Exception as e:
+            print(f"[get_reward] Error reading evaluation result: {e}", flush=True)
+            return 0.0
     
     def get_llm_config_path(self) -> str:
         """Get the path to the LLM config file pointing to interactive service.
@@ -392,38 +472,33 @@ class SweBenchInteractiveEnv:
             raise RuntimeError("Interactive API service not started")
         return self.llm_config_path
     
-    def close(self) -> None:
+    def close(self) -> float:
         """Cleanup interactive API service and temporary files."""
         # Check for pending chat-completion requests and submit empty responses
         if self.interactive_api_process is not None:
             try:
-                # Check status to see if there are pending requests
+                # Wait 10 seconds to allow any pending requests to complete
+                print(f"[Close] Waiting 5 seconds before checking pending requests...", flush=True)
+                time.sleep(5)
+                
+                # Check status once and submit finish actions if needed
                 import urllib.request
                 status_url = f"{self.interactive_api_url}/status"
-                
-                # Loop until no pending requests remain
-                max_iterations = 10  # Maximum number of iterations to avoid infinite loop
-                iteration = 0
-                
-                while iteration < max_iterations:
-                    try:
-                        with urllib.request.urlopen(status_url, timeout=2) as resp:
-                            status_data = json.loads(resp.read().decode())
-                            pending_count = status_data.get("pending_requests", 0)
-                            pending_request_ids = status_data.get("pending_request_ids", [])
-                            
-                            if pending_count == 0:
-                                print(f"[Close] No pending requests remaining.", flush=True)
-                                break
-                            
-                            print(f"[Close] Found {pending_count} pending chat-completion request(s), submitting empty responses...", flush=True)
+                try:
+                    with urllib.request.urlopen(status_url, timeout=2) as resp:
+                        status_data = json.loads(resp.read().decode())
+                        pending_count = status_data.get("pending_requests", 0)
+                        pending_request_ids = status_data.get("pending_request_ids", [])
+                        
+                        if pending_count > 0:
+                            print(f"[Close] Found {pending_count} pending chat-completion request(s), submitting finish actions...", flush=True)
                             
                             # Submit finish action for each pending request
                             for request_id in pending_request_ids:
                                 try:
                                     # Create finish tool call
                                     finish_tool_call = {
-                                        "id": "0",
+                                        "id": "-1",
                                         "type": "function",
                                         "function": {
                                             "name": "finish",
@@ -450,18 +525,10 @@ class SweBenchInteractiveEnv:
                                             print(f"[Close] Failed to submit finish action for {request_id}: {result.get('error', 'Unknown error')}", flush=True)
                                 except Exception as e:
                                     print(f"[Close] Error submitting finish action for {request_id}: {e}", flush=True)
-                            
-                            # Wait 2 seconds before checking again
-                            print(f"[Close] Waiting 2 seconds before checking again...", flush=True)
-                            time.sleep(2)
-                            iteration += 1
-                            
-                    except Exception as e:
-                        print(f"[Close] Could not check pending requests status: {e}", flush=True)
-                        break
-                
-                if iteration >= max_iterations:
-                    print(f"[Close] Reached maximum iterations ({max_iterations}), stopping check loop.", flush=True)
+                        else:
+                            print(f"[Close] No pending requests found.", flush=True)
+                except Exception as e:
+                    print(f"[Close] Could not check pending requests status: {e}", flush=True)
                 
                 # Now stop the interactive API service
                 self.interactive_api_process.terminate()
@@ -481,3 +548,6 @@ class SweBenchInteractiveEnv:
                 print(f"Error removing temporary LLM config file: {e}")
             finally:
                 self.llm_config_path = None
+
+        time.sleep(10) # wait for the docker to return the output file
+        return self.get_reward()
