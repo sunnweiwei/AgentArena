@@ -1,0 +1,5 @@
+{
+  "model": "gpt-4o-mini",
+  "base_url": "http://sf.lti.cs.cmu.edu:8057/v1",
+  "api_key": "not-needed"
+}
