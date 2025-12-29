@@ -1,5 +1,5 @@
 import json
-from typing import Any, Tuple
+from typing import Any, Tuple, Optional
 
 from .swebench_env_impl.core import SweBenchInteractiveEnv
 
@@ -12,6 +12,7 @@ def create_env(
     split: str = "test",
     instance_id: str | None = None,
     instance_index: int | None = None,
+    interactive_api_port: Optional[int] = None,
 ) -> Tuple[SweBenchInteractiveEnv, str]:
     """
     Create a SWE-bench interactive environment.
@@ -25,16 +26,19 @@ def create_env(
         split: dataset split to sample from
         instance_id: optional specific instance_id to load
         instance_index: optional integer index into the split
+        interactive_api_port: optional port for interactive API service (defaults to 8055)
 
     NOTE: If both instance_id and instance_index are None, a random instance
     will be picked deterministically based on hash of dataset_name+split.
     """
-    env = SweBenchInteractiveEnv(
-        dataset_name=dataset_name,
-        split=split,
-        instance_id=instance_id,
-        instance_index=instance_index,
-    )
+    env_kwargs = {
+        "dataset_name": dataset_name,
+        "split": split,
+        "instance_id": instance_id,
+        "instance_index": instance_index,
+        "interactive_api_port": interactive_api_port,
+    }
+    env = SweBenchInteractiveEnv(**env_kwargs)
 
     meta = {
         "env_type": "swebench",
