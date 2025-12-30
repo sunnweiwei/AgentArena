@@ -347,7 +347,16 @@ class SweBenchInteractiveEnv:
                 }
             }
         else:
-            tool_call_json = None
+            tool_call_json = {
+                "id": str(self.tool_call_counter),
+                "type": "function",
+                "function": {
+                    "name": "finish",
+                    "arguments": {
+                        "message": "[closed] No response submitted. Task terminated."
+                    }
+                }
+            }
         
         if "response" in fn_call:
             human_response = fn_call["response"]
@@ -379,7 +388,13 @@ class SweBenchInteractiveEnv:
         except Exception as e:
             print(f"Error submitting response: {e}")
 
-        return self.get_observations()
+        # Check if this is a finish action - if so, don't get next observation
+        if tool_call_json is not None and tool_call_json.get("function", {}).get("name") == "finish":
+            # Finish action - return empty or confirmation message, don't get next observation
+            return "Task finished"
+        else:
+            # Not a finish action - get next observation
+            return self.get_observations()
 
     def get_reward(self, **kwargs: Any) -> float:
         """
@@ -424,8 +439,8 @@ class SweBenchInteractiveEnv:
         output_files = list(output_base_dir.glob(pattern))
         
         if not output_files:
-            print(f"[get_reward] No output files found for instance {self.instance_id}", flush=True)
             print(f"[get_reward] Searched pattern: {pattern}", flush=True)
+            print(f"[get_reward] No output files found for instance {self.instance_id}", flush=True)
             print(f"[get_reward] Base directory: {output_base_dir} (exists: {output_base_dir.exists()})", flush=True)
             return 0.0
         
