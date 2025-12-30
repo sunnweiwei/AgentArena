@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import MessageList from './MessageList'
 import MessageInput from './MessageInput'
-import { getLastCanvasContent } from './AgentBlock'
+import { getLastCanvasContent, DiffBlock } from './AgentBlock'
 import './ChatWindow.css'
 
 const isDev = import.meta.env.DEV
@@ -25,7 +25,27 @@ const CanvasDisplay = ({ messages }) => {
 
   return (
     <div className="canvas-content">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+      <ReactMarkdown 
+        remarkPlugins={[remarkGfm]}
+        components={{
+          code: ({node, inline, className, children, ...props}) => {
+            const match = /language-(\w+)/.exec(className || '')
+            const language = match ? match[1] : ''
+            const content = String(children).replace(/\n$/, '')
+            
+            if (!inline && (language === 'diff' || language === 'patch')) {
+              return <DiffBlock content={content} />
+            }
+            
+            // Default code rendering
+            return inline ? (
+              <code className={className} {...props}>{children}</code>
+            ) : (
+              <code className={className} {...props}>{children}</code>
+            )
+          }
+        }}
+      >
         {canvasContent}
       </ReactMarkdown>
     </div>

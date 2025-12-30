@@ -631,28 +631,6 @@ READONLY_COMMANDS = {
     'ifconfig', 'ip', 'ping', 'curl', 'wget', 'tree', 'less', 'more'
 }
 
-
-@lru_cache(maxsize=10000)
-def is_readonly_command_cached(command: str) -> bool:
-    """Ultra-fast cached readonly command validation"""
-    if len(command) > 1000:
-        return False
-
-    # Quick pattern checks
-    dangerous_patterns = ['>', '<', '&', '|', ';', '$(', '`', 'rm ', 'mv ', 'cp ', 'chmod ', 'sudo ']
-    for pattern in dangerous_patterns:
-        if pattern in command:
-            return False
-
-    # Check first command
-    parts = command.split()
-    if not parts:
-        return False
-
-    base_cmd = parts[0]
-    return base_cmd in READONLY_COMMANDS
-
-
 # ========== Readonly Command Validation ==========
 READONLY_BASH_COMMANDS = {
     'ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'sort', 'uniq', 'cut', 'awk',
@@ -672,8 +650,8 @@ READONLY_BASH_COMMANDS = {
 }
 
 
-def is_readonly_command(command: str) -> bool:
-    """Enhanced readonly command validation - allows commands that only read data without modification"""
+def _is_readonly_command_single(command: str) -> bool:
+    """Check if a single command (no pipes) is readonly"""
     command = command.strip()
 
     # Quick cache check
@@ -686,12 +664,12 @@ def is_readonly_command(command: str) -> bool:
         'sed', 'diff', 'file', 'which', 'whereis', 'locate', 'du', 'df', 'pwd', 'whoami',
         'ps', 'top', 'htop', 'free', 'uname', 'hostname', 'date', 'uptime', 'history',
         'env', 'printenv', 'echo', 'printf', 'test', 'stat', 'lsof', 'netstat', 'ss',
-        'ifconfig', 'ip', 'ping', 'curl', 'wget', 'tree', 'less', 'more',
+        'ifconfig', 'ip', 'ping', 'curl', 'wget', 'tree', 'less', 'more', 'nl',
         'zcat', 'zless', 'zmore', 'bzcat', 'bzless', 'bzmore', 'xzcat', 'xzless', 'xzmore',
         'xxd', 'hexdump', 'od', 'strings', 'ldd', 'objdump', 'readelf', 'nm', 'size',
         'python', 'python3', 'node', 'ruby', 'perl', 'php', 'java', 'javac', 'gcc', 'g++',
         'clang', 'make', 'cmake', 'pip', 'npm', 'yarn', 'composer', 'bundle', 'gem',
-        'cargo', 'rustc', 'go', 'docker', 'kubectl', 'git'
+        'cargo', 'rustc', 'go', 'docker', 'kubectl', 'git', 'true', 'false'
     }
 
     # Commands that are never allowed (modify data or run code)
@@ -718,7 +696,7 @@ def is_readonly_command(command: str) -> bool:
         'go': {'list', 'version', 'env'},
         'docker': {'images', 'ps', 'version', 'info', 'stats'},
         'kubectl': {'get', 'describe', 'logs', 'version', 'cluster-info'},
-        'git': {'log', 'show', 'diff', 'status', 'branch', 'remote', 'config', 'blame', 'shortlog'},
+        'git': {'log', 'show', 'diff', 'status', 'branch', 'remote', 'config', 'blame', 'shortlog', 'grep', 'ls-files', 'ls-tree', 'rev-parse', 'describe', 'tag', 'cat-file', 'rev-list'},
         'make': {'-n', '--dry-run', '--just-print', '--recon', '--what-if'}
     }
 
@@ -789,6 +767,115 @@ def is_readonly_command(command: str) -> bool:
 
     except (ValueError, AttributeError):
         return False
+
+
+def is_readonly_command(command: str) -> bool:
+    """Enhanced readonly command validation - allows commands that only read data without modification.
+    Handles piped commands, logical operators (||, &&), and semicolon-separated commands."""
+    command = command.strip()
+    
+    # Quick cache check
+    if len(command) > 1000:  # Prevent extremely long commands
+        return False
+    
+    # First, handle semicolon-separated commands (;)
+    # Split by ; but be careful about quoted strings
+    if ';' in command:
+        # Use a simple split first - semicolons are rarely quoted
+        import re
+        # Split by ; that's not inside quotes (simple heuristic)
+        semicolon_parts = re.split(r';(?=(?:[^"]*"[^"]*")*[^"]*$)', command)
+        for part in semicolon_parts:
+            part = part.strip()
+            if part:
+                # Recursively check each semicolon-separated part
+                if not is_readonly_command(part):
+                    return False
+        return True
+    
+    # Parse the command to distinguish operators from literal strings
+    # This prevents treating quoted "||" or "true" as operators
+    try:
+        import shlex
+        cmd_parts = shlex.split(command)
+        
+        # Check if || or && appear as separate tokens (operators), not as part of arguments
+        has_logical_op = False
+        logical_op_positions = []
+        for i, part in enumerate(cmd_parts):
+            if part == '||' or part == '&&':
+                has_logical_op = True
+                logical_op_positions.append(i)
+        
+        if has_logical_op:
+            # Split command by logical operators (they appear as separate tokens)
+            # Reconstruct the original command parts
+            commands = []
+            start = 0
+            for pos in logical_op_positions:
+                # Command before the operator
+                if pos > start:
+                    commands.append(' '.join(cmd_parts[start:pos]))
+                start = pos + 1
+            # Command after the last operator
+            if start < len(cmd_parts):
+                commands.append(' '.join(cmd_parts[start:]))
+            
+            # All commands separated by || or && must be readonly
+            for cmd in commands:
+                cmd = cmd.strip()
+                if cmd:  # Skip empty commands
+                    if not _is_readonly_command_single(cmd):
+                        return False
+            return True
+        
+        # Check for pipe operator | (as a separate token)
+        pipe_positions = [i for i, part in enumerate(cmd_parts) if part == '|']
+        if pipe_positions:
+            # Split command by pipe operators
+            commands = []
+            start = 0
+            for pos in pipe_positions:
+                if pos > start:
+                    commands.append(' '.join(cmd_parts[start:pos]))
+                start = pos + 1
+            if start < len(cmd_parts):
+                commands.append(' '.join(cmd_parts[start:]))
+            
+            # All commands in the pipeline must be readonly
+            for cmd in commands:
+                cmd = cmd.strip()
+                if cmd:
+                    if not _is_readonly_command_single(cmd):
+                        return False
+            return True
+            
+    except (ValueError, AttributeError):
+        # If parsing fails, fall back to regex-based detection
+        # Handle logical operators (||, &&) - split and validate each command
+        if '||' in command or '&&' in command:
+            import re
+            parts = re.split(r'\s*\|\|\s*|\s*&&\s*', command)
+            for part in parts:
+                part = part.strip()
+                if part:
+                    if not _is_readonly_command_single(part):
+                        return False
+            return True
+        
+        # Handle piped commands - split by single pipe | (not ||)
+        if '|' in command and not command.strip().startswith('|') and not command.strip().endswith('|'):
+            import re
+            pipe_commands = re.split(r'(?<!\|)\|(?!\|)', command)
+            for pipe_cmd in pipe_commands:
+                pipe_cmd = pipe_cmd.strip()
+                if pipe_cmd:
+                    if not _is_readonly_command_single(pipe_cmd):
+                        return False
+            return True
+    
+    # For non-piped commands, use the single command checker
+    return _is_readonly_command_single(command)
 
 
 @lru_cache(maxsize=5000)
@@ -890,7 +977,9 @@ class VirtualFilesystem:
 
         # Simple but effective pattern: match /path but not when preceded by -
         # and not when followed by shell operators
-        path_pattern = r'(?<!-)(/[a-zA-Z0-9_./-]+)(?=\s|$|\||>|<|&|;|\)|\])'
+        # IMPORTANT: Don't match /path when it's part of a relative path like "requests/models.py"
+        # Only match absolute paths that start at the beginning of a word boundary or after whitespace/operators
+        path_pattern = r'(?<![a-zA-Z0-9_./-])(/[a-zA-Z0-9_./-]+)(?=\s|$|\||>|<|&|;|\)|\])'
         result = re.sub(path_pattern, replace_path, result)
 
         # Handle quoted paths
@@ -1362,7 +1451,7 @@ if __name__ == "__main__":
     # Ultra-high performance configuration
     uvicorn.run(
         app,
-        host="::",
+        host="0.0.0.0",  # Bind to all interfaces (IPv4 and IPv6)
         port=8011,
         workers=1,
         loop="asyncio",

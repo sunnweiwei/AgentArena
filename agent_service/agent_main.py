@@ -11,6 +11,7 @@ from typing import List, Dict, Optional, Any
 from search_agent import agent_loop as search_agent_loop
 from tau_agent import agent_loop as tau_agent_loop
 from bc_agent import agent_loop as bc_agent_loop
+from repo_agent import agent_loop as repo_agent_loop
 import json
 import os
 
@@ -187,6 +188,8 @@ async def chat_completions(request: ChatRequest):
         selected_agent_loop = tau_agent_loop
     elif conversation[0]['role'] == 'user' and conversation[0]['content'].startswith('\\bc'):
         selected_agent_loop = bc_agent_loop
+    elif conversation[0]['role'] == 'user' and conversation[0]['content'].startswith('\\repo'):
+        selected_agent_loop = repo_agent_loop
     else:
         selected_agent_loop = search_agent_loop
     if request.stream:

@@ -63,42 +63,42 @@ const Sidebar = ({
               onClose={() => setUserMenuOpen(false)}
             />
           ) : (
-            <div className="chat-list">
-              {isLocked ? (
-                <div className="empty-state">
-                  Log in to see your chats.
-                </div>
-              ) : chats.length === 0 ? (
-                <div className="empty-state">
-                  No chats yet. Start a new conversation!
-                </div>
-              ) : (
-                chats.map(chat => {
-                  const isPending = Boolean(pendingChats?.[chat.id])
-                  return (
-                  <div
-                    key={chat.id}
-                      className={`chat-item ${chat.id === currentChatId ? 'active' : ''} ${animatingChatId === chat.id ? 'moving-to-top' : ''} ${isPending ? 'pending' : ''}`}
-                    onClick={() => {
-                      if (isLocked) return
-                      onSelectChat(chat.id)
-                    }}
-                  >
-                    <div className="chat-item-content">
-                        <div className="chat-title-row">
-                      <div className="chat-title">{chat.title}</div>
-                          {isPending && (
-                            <div className="chat-pending-indicator" title="Assistant response in progress">
-                              <span></span>
-                              <span></span>
-                              <span></span>
-                            </div>
-                          )}
+        <div className="chat-list">
+          {isLocked ? (
+            <div className="empty-state">
+              Log in to see your chats.
+            </div>
+          ) : chats.length === 0 ? (
+            <div className="empty-state">
+              No chats yet. Start a new conversation!
+            </div>
+          ) : (
+            chats.map(chat => {
+              const isPending = Boolean(pendingChats?.[chat.id])
+              return (
+              <div
+                key={chat.id}
+                  className={`chat-item ${chat.id === currentChatId ? 'active' : ''} ${animatingChatId === chat.id ? 'moving-to-top' : ''} ${isPending ? 'pending' : ''}`}
+                onClick={() => {
+                  if (isLocked) return
+                  onSelectChat(chat.id)
+                }}
+              >
+                <div className="chat-item-content">
+                    <div className="chat-title-row">
+                  <div className="chat-title">{chat.title}</div>
+                      {isPending && (
+                        <div className="chat-pending-indicator" title="Assistant response in progress">
+                          <span></span>
+                          <span></span>
+                          <span></span>
                         </div>
-                      </div>
+                      )}
                     </div>
-                  )
-                })
+                  </div>
+                </div>
+              )
+            })
               )}
             </div>
           )}

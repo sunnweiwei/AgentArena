@@ -40,11 +40,9 @@ def get_agent_env_from_str(env_str: str):
 
 class GymEnv:
     # Gym stype env wrapper
-    def __init__(self, config, tokenizer, ability):
-        self.config = config
-        self.tokenizer = tokenizer
-        self.ability = ability
-        self.gym = get_agent_env_from_str(ability)
+    def __init__(self, env_str):
+        self.env_str = env_str
+        self.gym = get_agent_env_from_str(env_str)
         self.instance_info = self.gym.instance_info
         self.stats = collections.Counter()
         self.stats['finish'] = 0
@@ -94,7 +92,7 @@ class GymEnv:
         self.stats['action'] += 1
         success, observation = await asyncio.to_thread(self.gym.step, response)
         if observation == "Task finished":
-            return {'action': 'finish'}
+            return {'observation': 'finish'}
 
         return {'observation': observation}
 
@@ -246,6 +244,17 @@ def convert_non_fncall_messages_to_fncall_messages(messages, tools):
                             'function': {'name': name, 'arguments': json.dumps(params)}}]}]
 
 
+def codeact_tool():
+    execute_bash = {'type': 'function', 'function': {'name': 'execute_bash', 'parameters': {'type': 'object', 'properties': {'command': {'type': 'string'}}, 'required': ['command']}}}
+
+    str_replace_editor = {'type': 'function', 'function': {'name': 'str_replace_editor', 'parameters': {'type': 'object', 'properties': {'command': {'type': 'string', 'enum': ['view', 'create', 'str_replace', 'insert', 'undo_edit']}, 'path': {'type': 'string'}, 'file_text': {'type': 'string'}, 'old_str': {'type': 'string'}, 'new_str': {'type': 'string'}, 'insert_line': {'type': 'integer'}, 'view_range': {'type': 'array', 'items': {'type': 'integer'}}}, 'required': ['command', 'path']}}}
+
+    think = {'type': 'function', 'function': {'name': 'think', 'parameters': {'type': 'object', 'properties': {'content': {'type': 'string'}}, 'required': ['content']}}}
+
+    finish = {'type': 'function', 'function': {'name': 'finish', 'parameters': {'type': 'object', 'properties': {'message': {'type': 'string'}}}}}
+
+    return [execute_bash, str_replace_editor, think, finish]
+
 
 @register_env
 class FileLocEnv:
@@ -263,7 +272,7 @@ class FileLocEnv:
 
         # Get instance ID for base_dir mapping
         self.instance_id = self.instance_info.get('instance_id', 'default')
-        base_dir_base = os.getenv('BASE_DIR_PATH', './gym_data')
+        base_dir_base = os.getenv('BASE_DIR_PATH', '/usr1/data/weiweis/chat_server/runtime_service/gym_data')
         self.base_dir = f"{base_dir_base}/{self.instance_id}"
         self.answer = None
 
@@ -271,6 +280,7 @@ class FileLocEnv:
         self._finish_called = False
         self.think_history = []
         self.client = SimpleHttpClient(service_url)
+        self.tools = codeact_tool()
 
     def ping(self):
         """Check if the service is responding"""
@@ -301,21 +311,33 @@ class FileLocEnv:
                 else:
                     new_url = f"http://localhost:{port}"
 
-                # Test this port
+                # Test this port directly without calling ping() to avoid recursion
                 old_timeout = self.client.timeout
                 self.client.timeout = 3  # Short timeout for testing
+                old_base_url = self.client.base_url
                 self.client.base_url = new_url
 
-                if self.ping():
-                    print(f"Switched to port {port}")
-                    self.service_url = new_url
+                # Direct ping test without recursion
+                try:
+                    response = self.client.get('ping')
+                    if isinstance(response, dict):
+                        content = response.get('content', response.get('result', ''))
+                    else:
+                        content = str(response)
+                    
+                    if content == 'pong' or 'pong' in content.lower():
+                        print(f"Switched to port {port}")
+                        self.service_url = new_url
+                        self.client.timeout = old_timeout
+                        return True
+                except:
+                    pass
+                finally:
+                    self.client.base_url = old_base_url
                     self.client.timeout = old_timeout
-                    return True
 
             except:
                 pass
-            finally:
-                self.client.timeout = old_timeout
 
         return False
 
@@ -424,7 +446,7 @@ class FileLocEnv:
                 # Call the service
                 observation = self._call_service('code_act', name, arguments)
                 observation = truncate_text(observation, max_lines=500, max_length=6_000, merge_repeat=True,
-                                            merge_num=32, max_tokens=10_000)
+                                            merge_num=32, )
                 return True, observation
 
         except Exception as e:
@@ -436,7 +458,7 @@ class FileLocEnv:
         if "@" in env_str:
             env_str = env_str.split("@", 1)[1]
         # Extract service URL from kwargs or use default
-        service_url = os.getenv('LOC_IP_ADDRESS', 'http://localhost:8000')
+        service_url = os.getenv('LOC_IP_ADDRESS', 'http://localhost:8011')
         return cls(env_str=env_str, service_url=service_url, **kwargs)
 
     @property
@@ -535,7 +557,7 @@ class RepairEnv:
         self.service_url = service_url
         self.kwargs = kwargs
         self.instance_id = self.instance_info.get('instance_id', 'default')
-        base_dir_base = os.getenv('BASE_DIR_PATH', './gym_data')
+        base_dir_base = os.getenv('BASE_DIR_PATH', '/usr1/data/weiweis/chat_server/runtime_service/gym_data')
         self.base_dir = f"{base_dir_base}/{self.instance_id}"
         self.answer = None
 
@@ -545,7 +567,7 @@ class RepairEnv:
         self.file_cache = {}  # {path: {'original': str, 'current': str}}
 
         self.client = SimpleHttpClient(service_url)
-
+        self.tools = codeact_tool()
 
     def _get_file_content(self, path: str) -> str:
         """Get file content, either from cache or by reading from server"""
@@ -624,6 +646,102 @@ class RepairEnv:
         snippet = '\n'.join(f"{start_line + i + 1:4d} | {line}" for i, line in enumerate(snippet_lines))
 
         return f"The file {path} has been edited. Here is the result of running `cat -n` on a snippet of {path}:\n{snippet}\nReview the changes and make sure they are as expected. Edit the file again if necessary."
+
+    def _insert_local(self, path: str, insert_line: int, new_str: str) -> str:
+        """Perform insert operation locally on cached content"""
+        import re
+
+        path = path.strip().lstrip('/')
+        path = re.sub(r'^(?:\.?/)?(?:testbed/|workspace/)', '', path)
+        path = os.path.normpath(path)
+
+        try:
+            current_content = self._get_file_content(path)
+        except FileNotFoundError:
+            return f"Error: File {path} not found"
+
+        if insert_line is None:
+            return "Error: insert_line parameter is required for insert command"
+
+        # Split content into lines
+        lines = current_content.split('\n')
+        
+        # Validate insert_line (1-indexed, insert after this line)
+        if insert_line < 0:
+            return f"Error: insert_line must be >= 0, got {insert_line}"
+        if insert_line > len(lines):
+            return f"Error: insert_line {insert_line} is beyond file length ({len(lines)} lines)"
+
+        # Insert new_str after insert_line
+        # If insert_line is 0, insert at the beginning
+        # If insert_line is N, insert after line N (so at index N)
+        insert_idx = insert_line
+        
+        # Split new_str into lines to insert
+        new_lines = new_str.split('\n')
+        
+        # Insert the new lines
+        lines = lines[:insert_idx] + new_lines + lines[insert_idx:]
+        
+        # Reconstruct content
+        new_content = '\n'.join(lines)
+        
+        # Update cache
+        self.file_cache[path]['current'] = new_content
+
+        # Generate snippet around the insertion for output
+        context_window = 10
+        start_line = max(1, insert_line - context_window)
+        end_line = min(len(lines), insert_line + len(new_lines) + context_window)
+        
+        snippet_lines = []
+        for i in range(start_line - 1, end_line):
+            line_num = i + 1
+            line_content = lines[i] if i < len(lines) else ''
+            if start_line <= line_num <= insert_line:
+                snippet_lines.append(f"{line_num:6d}  {line_content}")
+            elif insert_line < line_num <= insert_line + len(new_lines):
+                snippet_lines.append(f"{line_num:6d} +{line_content}")
+            else:
+                snippet_lines.append(f"{line_num:6d}  {line_content}")
+        
+        snippet = '\n'.join(snippet_lines)
+        return f"Successfully inserted {len(new_lines)} line(s) after line {insert_line} in {path}\n\n{snippet}"
+
+    def _undo_edit_local(self, path: str) -> str:
+        """Undo the last edit made to a file, reverting to original state"""
+        import re
+        import os
+
+        path = path.strip().lstrip('/')
+        path = re.sub(r'^(?:\.?/)?(?:testbed/|workspace/)', '', path)
+        path = os.path.normpath(path)
+
+        # Check if file is in cache
+        if path not in self.file_cache:
+            return f"Error: File {path} has not been edited or viewed, so there is nothing to undo."
+
+        cache_entry = self.file_cache[path]
+        original_content = cache_entry.get('original', '')
+        current_content = cache_entry.get('current', '')
+
+        # Check if there are any changes to undo
+        if original_content == current_content:
+            return f"File {path} is already at its original state. No changes to undo."
+
+        # Revert to original
+        self.file_cache[path]['current'] = original_content
+
+        # Generate snippet showing the reverted content
+        lines = original_content.split('\n')
+        if len(lines) > 50:
+            # Show first and last 25 lines if file is long
+            snippet_lines = lines[:25] + ['... [middle content omitted] ...'] + lines[-25:]
+        else:
+            snippet_lines = lines
+
+        snippet = '\n'.join(f"{i + 1:6d}  {line}" for i, line in enumerate(snippet_lines))
+        return f"Successfully reverted {path} to its original state.\n\n{snippet}"
 
     def _view_file_local(self, path: str, start_line: int = None, end_line: int = None) -> str:
         """View file content from cache or server, or list directory contents"""
@@ -1083,7 +1201,13 @@ class RepairEnv:
                 response = self.client.post(endpoint, payload)
                 self.client.timeout = original_timeout
                 if isinstance(response, dict):
-                    return response.get('result', response.get('content', str(response)))
+                    result = response.get('result', response.get('content', str(response)))
+                    # Check if result contains an error message from repo_server
+                    if isinstance(result, str):
+                        # Check if it's an actual error response from repo_server
+                        if response.get('data', {}).get('success') is False or 'not found' in result.lower():
+                            return f"Service error: {result}"
+                    return result
                 else:
                     return str(response)
 
@@ -1127,12 +1251,21 @@ class RepairEnv:
             if 'tool_calls' not in fncall:
                 return True, NO_FNCALL_PROMPT
 
-            fncall = fncall['tool_calls'][0]['function']
-            if isinstance(fncall['arguments'], str):
-                arguments = json.loads(fncall['arguments'])
+            if not fncall['tool_calls'] or len(fncall['tool_calls']) == 0:
+                return True, NO_FNCALL_PROMPT
+
+            fncall_func = fncall['tool_calls'][0].get('function')
+            if not fncall_func:
+                return True, NO_FNCALL_PROMPT
+
+            if isinstance(fncall_func.get('arguments'), str):
+                arguments = json.loads(fncall_func['arguments'])
             else:
-                arguments = fncall['arguments']
-            name = fncall['name']
+                arguments = fncall_func.get('arguments', {})
+            name = fncall_func.get('name')
+            
+            if not name:
+                return True, NO_FNCALL_PROMPT
 
             if name == 'finish':
                 self._finish_called = True
@@ -1142,6 +1275,10 @@ class RepairEnv:
                 return True, AFTER_THINK_PROMPT
             elif name == 'str_replace_editor':
                 command = arguments.get('command', '')
+                
+                # Normalize command to handle any whitespace or case issues
+                if isinstance(command, str):
+                    command = command.strip().lower()
 
                 if command == 'str_replace':
                     path = arguments.get('path', '')
@@ -1175,26 +1312,46 @@ class RepairEnv:
                     snippet = '\n'.join(f"{i + 1:4d} | {line}" for i, line in enumerate(lines))
                     observation = f"File created successfully at: {path}\n{snippet}"
 
+                elif command == 'insert':
+                    path = arguments.get('path', '')
+                    insert_line = arguments.get('insert_line')
+                    new_str = arguments.get('new_str', '')
+
+                    observation = self._insert_local(path, insert_line, new_str)
+
+                elif command == 'undo_edit':
+                    path = arguments.get('path', '')
+
+                    observation = self._undo_edit_local(path)
+
                 else:
+                    # If command is not recognized, it means it's not being handled locally
+                    # This should not happen for insert, create, str_replace, view, undo_edit
                     observation = self._call_service('code_act', name, arguments)
 
                 observation = truncate_text(observation, max_lines=500, max_length=6_000, merge_repeat=True,
-                                            merge_num=32, max_tokens=10_000)
+                                            merge_num=32, )
                 return True, observation
             elif name == 'execute_bash':
                 # Handle bash commands with cached file awareness
                 observation = self._execute_bash_local(arguments.get('command', ''))
                 observation = truncate_text(observation, max_lines=500, max_length=6_000, merge_repeat=True,
-                                            merge_num=32, max_tokens=10_000)
+                                            merge_num=32, )
                 return True, observation
             else:
                 observation = self._call_service('code_act', name, arguments)
                 observation = truncate_text(observation, max_lines=500, max_length=6_000, merge_repeat=True,
-                                            merge_num=32, max_tokens=10_000)
+                                            merge_num=32, )
                 return True, observation
 
         except Exception as e:
-            return False, f"Step failed: {str(e)}"
+            error_type = type(e).__name__
+            error_msg = str(e)
+            # Handle cases where error message is just "0" (likely KeyError or IndexError)
+            if error_msg == "0" or error_msg == "":
+                error_msg = f"{error_type}: Missing key/index 0 (likely 'tool_calls' parsing issue)"
+            action_repr = repr(action)[:200] if 'action' in locals() else 'N/A'
+            return False, f"Step failed: {error_type}: {error_msg}\nAction received: {action_repr}"
 
     @classmethod
     def from_env_str(cls, env_str: str, **kwargs):
@@ -1202,7 +1359,7 @@ class RepairEnv:
         if "@" in env_str:
             env_str = env_str.split("@", 1)[1]
         # Extract service URL from kwargs or use default
-        service_url = os.getenv('LOC_IP_ADDRESS', 'http://localhost:8000')
+        service_url = os.getenv('LOC_IP_ADDRESS', 'http://localhost:8011')
         return cls(env_str=env_str, service_url=service_url, **kwargs)
 
     @property
@@ -1335,6 +1492,36 @@ class RepairEnv:
         pass
 
 
+
+def create_env(env_str=None):
+    # Set LOC_IP_ADDRESS to repo_server port if not already set
+    if 'LOC_IP_ADDRESS' not in os.environ:
+        os.environ['LOC_IP_ADDRESS'] = 'http://localhost:8011'
+    env = GymEnv(env_str)
+    return env, json.dumps(env.instance_info)
+
+
+async def env_step(env: GymEnv, params):
+    # env_step receives a single function call dict from runtime_server
+    # but run_action expects a list of function calls, so wrap it
+    response = params['response']
+    if response == '\\patch':
+        if isinstance(env.gym, RepairEnv):
+            return env.gym.generate_git_diff()
+        else:
+            return ""
+    observation = await env.run_action(response)
+    return observation['observation']
+
+
+async def get_reward(env: GymEnv, **kwargs):
+    """Get reward from the environment. Accepts **kwargs to be compatible with different env types."""
+    result = await env.get_reward(None, None, None)
+    return result[1]  # Return the reward value
+
+
+def close_env(env):
+    return
 
 
 

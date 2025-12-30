@@ -37,22 +37,53 @@ def extract_fn_call(text):
     - List of function call dicts if valid format found
     - {'error': 'message'} if wrong format detected
     - None if no function call found
+    
+    Function name must be: <function=name>
+    Parameters can be: <parameter=name>value</parameter> OR <name>value</name>
+    Both parameter formats can be mixed.
     """
     if not text:
         return None
     text = re.split(r'<\[[^\]]+\]>', text)[-1].strip()
 
+    # Only accept <function=name> format for function names
     matches = list(re.finditer(
         r'(?m)^[ \t]*<function=([^>]+)>\s*(.*?)\s*</function>',
         text,
         re.DOTALL
     ))
 
-    # NEW: detect "started a tool call but didn't close tags" (e.g., missing </parameter> or </function>)
     if not matches:
+        # Check for incomplete function call
         fn_start = re.search(r'(?m)^[ \t]*<function=([^>]+)>', text)
         if fn_start:
             fn_name = fn_start.group(1)
+            
+            # First check for wrong format: <parameter>value</parameter> instead of <parameter=name>value</parameter>
+            wrong_param_format = re.findall(r'<parameter>([^<]*)</parameter>', text)
+            if wrong_param_format:
+                return {
+                    'error': f"""**Tool Call Format Error**
+
+You used `<parameter>` without specifying the parameter name. The parameter name must be in the opening tag.
+
+**Your format (WRONG):**
+```
+<function={fn_name}>
+<parameter>{wrong_param_format[0][:50]}...</parameter>
+</function>
+```
+
+**Correct format:**
+```
+<function={fn_name}>
+<parameter=message>{wrong_param_format[0][:50]}...</parameter>
+</function>
+```
+
+Please use `<parameter=PARAM_NAME>value</parameter>` format. The parameter name (e.g., `message`, `command`, `path`) must be specified in the opening tag like `<parameter=message>`."""
+                }
+            
             open_params = len(re.findall(r'<parameter=[^>]+>', text))
             close_params = len(re.findall(r'</parameter>', text))
             has_close_function = bool(re.search(r'</function>', text))
@@ -61,7 +92,7 @@ def extract_fn_call(text):
                 return {
                     'error': f"""**Tool Call Format Error**
 
-It looks like you started a tool call but didn’t close one or more tags (e.g., missing `</parameter>` and/or `</function>`).
+It looks like you started a tool call but didn't close one or more tags (e.g., missing `</parameter>` and/or `</function>`).
 
 **Your format (WRONG):**
 ```
@@ -81,62 +112,140 @@ It looks like you started a tool call but didn’t close one or more tags (e.g.,
 Please make sure every `<parameter=...>` has a matching `</parameter>`, and every `<function=...>` has a closing `</function>`."""
                 }
         return None
-
-    # Check for wrong format: <param_name>value</param_name> instead of <parameter=param_name>value</parameter>
+    
+    # Check for wrong parameter format and incomplete parameters within matched function calls
     for m in matches:
         fn_body = m.group(2)
-        # Check if using correct format
-        correct_params = re.findall(r'<parameter=([^>]+)>(.*?)</parameter>', fn_body, re.DOTALL)
-        # Check if using wrong format (XML-style tags without 'parameter=')
-        wrong_params = re.findall(r'<([a-z_][a-z0-9_]*)>(.*?)</\1>', fn_body, re.DOTALL | re.IGNORECASE)
-        # Filter out any that might be legitimate tags
-        wrong_params = [(name, val) for name, val in wrong_params if name.lower() not in ['function', 'parameter']]
-
-        if wrong_params and not correct_params:
-            # Agent used wrong format
-            fn_name = m.group(1)
-            wrong_param_names = [p[0] for p in wrong_params]
+        fn_name = m.group(1)
+        
+        # First check for wrong format: <parameter>value</parameter> instead of <parameter=name>value</parameter>
+        wrong_param_format = re.findall(r'<parameter>([^<]*)</parameter>', fn_body)
+        if wrong_param_format:
+            preview = wrong_param_format[0][:50].replace('\n', ' ')
             return {
                 'error': f"""**Tool Call Format Error**
 
-You used the wrong format for function parameters. 
+You used `<parameter>` without specifying the parameter name. The parameter name must be in the opening tag.
 
 **Your format (WRONG):**
 ```
 <function={fn_name}>
-<{wrong_param_names[0]}>value</{wrong_param_names[0]}>
+<parameter>{preview}...</parameter>
 </function>
 ```
 
 **Correct format:**
 ```
 <function={fn_name}>
-<parameter={wrong_param_names[0]}>value</parameter>
+<parameter=message>{preview}...</parameter>
 </function>
 ```
 
-Please use `<parameter=PARAM_NAME>value</parameter>` format for all parameters."""
+Please use `<parameter=PARAM_NAME>value</parameter>` format. The parameter name (e.g., `message`, `command`, `path`) must be specified in the opening tag like `<parameter=message>`."""
+            }
+        
+        # Check for incomplete parameters
+        open_params = len(re.findall(r'<parameter=[^>]+>', fn_body))
+        close_params = len(re.findall(r'</parameter>', fn_body))
+        if open_params != close_params:
+            return {
+                'error': f"""**Tool Call Format Error**
+
+It looks like you started a tool call but didn't close one or more parameter tags (e.g., missing `</parameter>`).
+
+**Your format (WRONG):**
+```
+<function={fn_name}>
+<parameter=query>...
+```
+
+**Correct format:**
+```
+<function={fn_name}>
+<parameter=query>...</parameter>
+</function>
+```
+
+Please make sure every `<parameter=...>` has a matching `</parameter>`."""
             }
 
+    # Extract parameters - support both <parameter=name>value</parameter> and <name>value</name>
     groups = [[matches[0]]]
     for m in matches[1:]:
         prev = groups[-1][-1]
         line_gap = text.count('\n', prev.end(), m.start())
         groups[-1].append(m) if line_gap < 4 else groups.append([m])
     last = groups[-1]
-    return [
-        {
-            'name': m.group(1),  # <-- each call uses its *own* captured fn name
-            'arguments': dict(re.findall(
-                r'<parameter=([^>]+)>(.*?)</parameter>',
-                m.group(2),
-                re.DOTALL
-            ))
-        }
-        for m in last
-    ]
+    
+    results = []
+    for m in last:
+        fn_body = m.group(2)
+        fn_name = m.group(1)
+        
+        # Extract standard format parameters: <parameter=name>value</parameter>
+        standard_params = dict(re.findall(
+            r'<parameter=([^>]+)>(.*?)</parameter>',
+            fn_body,
+            re.DOTALL
+        ))
+        
+        # Extract XML-style parameters: <name>value</name> (but exclude 'parameter' and 'function' tags)
+        xml_params = re.findall(r'<([a-z_][a-z0-9_]*)>(.*?)</\1>', fn_body, re.DOTALL | re.IGNORECASE)
+        xml_params_dict = {}
+        for param_name, param_value in xml_params:
+            # Skip 'parameter' and 'function' tags (these are structural, not parameters)
+            if param_name.lower() not in ['parameter', 'function']:
+                xml_params_dict[param_name] = param_value.strip()
+        
+        # Merge: standard params take precedence, then XML params
+        merged_params = {**xml_params_dict, **standard_params}
+        
+        results.append({
+            'name': fn_name,
+            'arguments': merged_params
+        })
+    
+    return results
 
 
+def fn_call_to_text(fn_call) -> str:
+    """
+    Convert a parsed function call (or list of calls) back to text format.
+    
+    Args:
+        fn_call: Dict with 'name' and 'arguments' keys, or list of such dicts
+        
+    Returns:
+        String in format:
+          - single: <function=name>\n<parameter=key>value</parameter>\n</function>
+          - list: multiple such blocks concatenated with two newlines
+    """
+    # If we got a list of function calls, convert each and join
+    if isinstance(fn_call, list):
+        parts = [fn_call_to_text(item) for item in fn_call]
+        return "\n\n".join(parts)
+
+    if not isinstance(fn_call, dict) or 'name' not in fn_call:
+        raise ValueError("fn_call must be a dict with 'name' key or a list of such dicts")
+    
+    fn_name = fn_call['name']
+    arguments = fn_call.get('arguments', {}) or {}
+    
+    # Build the function call text
+    lines = [f"<function={fn_name}>"]
+    
+    # Add parameters
+    for key, value in arguments.items():
+        # Convert value to string, handle None
+        if value is None:
+            value_str = ""
+        else:
+            value_str = str(value)
+        lines.append(f"<parameter={key}>{value_str}</parameter>")
+    
+    lines.append("</function>")
+    
+    return "\n".join(lines)
 
 
 class RuntimeServiceError(Exception):

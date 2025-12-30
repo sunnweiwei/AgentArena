@@ -15,19 +15,18 @@ def load_env_module(env_type: str):
     Load environment module based on env_type.
     Returns the imported module.
     """
-    if env_type == "tau":
+    if env_type == 'tau':
         import tau_env
-
         return tau_env
-    elif env_type == "bc":
+    elif env_type == 'bc':
         import bc_env
-
         return bc_env
-    elif env_type == "swebench":
-        # Interactive SWE-bench environment (see swebench_env.py)
+    elif env_type == 'swebench':
         import swebench_env
-
         return swebench_env
+    elif env_type == 'repo':
+        import repo_env
+        return repo_env
     # Add more elif blocks for other environment types
     # elif env_type == 'custom':
     #     import custom_env

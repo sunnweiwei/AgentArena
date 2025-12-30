@@ -5,6 +5,64 @@ import rehypeRaw from 'rehype-raw'
 import './AgentBlock.css'
 
 /**
+ * DiffBlock component - renders git diff with proper syntax highlighting
+ * Shows added lines in green, removed lines in red, like VS Code
+ */
+export function DiffBlock({ content }) {
+  const lines = content.split('\n')
+  
+  return (
+    <div className="diff-block">
+      {lines.map((line, index) => {
+        let lineClass = 'diff-line'
+        let prefix = ''
+        
+        if (line.startsWith('+++') || line.startsWith('---')) {
+          lineClass += ' diff-header'
+        } else if (line.startsWith('@@')) {
+          lineClass += ' diff-hunk'
+        } else if (line.startsWith('+')) {
+          lineClass += ' diff-add'
+          prefix = '+'
+        } else if (line.startsWith('-')) {
+          lineClass += ' diff-remove'
+          prefix = '-'
+        } else if (line.startsWith(' ')) {
+          lineClass += ' diff-context'
+        }
+        
+        return (
+          <div key={index} className={lineClass}>
+            <span className="diff-prefix">{prefix || ' '}</span>
+            <span className="diff-text">{line.startsWith('+') || line.startsWith('-') ? line.slice(1) : line}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * Custom code block component that handles diff specially
+ */
+export function CodeBlock({ children, className, ...props }) {
+  const match = /language-(\w+)/.exec(className || '')
+  const language = match ? match[1] : ''
+  const content = String(children).replace(/\n$/, '')
+  
+  if (language === 'diff' || language === 'patch') {
+    return <DiffBlock content={content} />
+  }
+  
+  // Default code block rendering
+  return (
+    <pre className={className} {...props}>
+      <code>{children}</code>
+    </pre>
+  )
+}
+
+/**
  * Extract canvas content from message and return content without canvas parts
  * Returns { content: string (without canvas), canvasContent: string | null (last canvas) }
  */
@@ -73,17 +131,34 @@ function parseFunctionCalls(text) {
     const functionName = match[1]
     const paramsXml = match[2]
     
-    // Extract parameters
-    const paramRegex = /<parameter=([^>]+)>(.*?)<\/parameter>|<parameter>(.*?)<\/parameter>/gs
+    // Extract parameters - supports multiple formats:
+    // 1. <parameter=name>value</parameter>
+    // 2. <parameter>value</parameter> (unnamed)
+    // 3. <tagname>value</tagname> (direct XML tag as parameter name)
     const params = {}
+    
+    // First try <parameter=name> format
+    const paramRegex = /<parameter=([^>]+)>(.*?)<\/parameter>/gs
     let paramMatch
     while ((paramMatch = paramRegex.exec(paramsXml)) !== null) {
-      if (paramMatch[1]) {
-        params[paramMatch[1]] = paramMatch[2].trim()
-      } else if (paramMatch[3]) {
-        if (!params._unnamed) params._unnamed = []
-        params._unnamed.push(paramMatch[3].trim())
-      }
+      params[paramMatch[1]] = paramMatch[2].trim()
+    }
+    
+    // Then try <parameter> (unnamed) format
+    const unnamedParamRegex = /<parameter>(.*?)<\/parameter>/gs
+    while ((paramMatch = unnamedParamRegex.exec(paramsXml)) !== null) {
+      if (!params._unnamed) params._unnamed = []
+      params._unnamed.push(paramMatch[1].trim())
+    }
+    
+    // Finally try direct XML tags like <command>value</command>
+    // Match any tag that's not 'parameter' or 'function'
+    const directTagRegex = /<([a-zA-Z_][a-zA-Z0-9_]*)>([\s\S]*?)<\/\1>/gs
+    while ((paramMatch = directTagRegex.exec(paramsXml)) !== null) {
+      const tagName = paramMatch[1]
+      // Skip if it's a parameter tag (already handled above)
+      if (tagName.toLowerCase() === 'parameter') continue
+      params[tagName] = paramMatch[2].trim()
     }
     
     parts.push({
@@ -207,10 +282,15 @@ export function parseAgentMarkup(content) {
  */
 
 function getPrimaryArg(functionName, params) {
+  // Handle specific function types
   if (functionName === 'search') {
     return params.query || params._unnamed?.[0] || ''
   } else if (functionName === 'extract') {
     return params.url || params._unnamed?.[0] || ''
+  } else if (functionName === 'execute_bash' || functionName === 'bash') {
+    return params.command || params._unnamed?.[0] || ''
+  } else if (functionName === 'read_file' || functionName === 'str_replace_editor') {
+    return params.path || params.file || params._unnamed?.[0] || ''
   }
   // Default: show first named parameter or first unnamed parameter
   const namedParams = Object.keys(params).filter(k => k !== '_unnamed')
@@ -292,7 +372,23 @@ export function HighlightBlock({ content }) {
   return (
     <div className="agent-block highlight">
       <div className="highlight-content">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+        <ReactMarkdown 
+          remarkPlugins={[remarkGfm]} 
+          rehypePlugins={[rehypeRaw]}
+          components={{
+            code: ({node, inline, className, children, ...props}) => {
+              const match = /language-(\w+)/.exec(className || '')
+              const language = match ? match[1] : ''
+              const codeContent = String(children).replace(/\n$/, '')
+              
+              if (!inline && (language === 'diff' || language === 'patch')) {
+                return <DiffBlock content={codeContent} />
+              }
+              
+              return <code className={className} {...props}>{children}</code>
+            }
+          }}
+        >
           {content}
         </ReactMarkdown>
       </div>
@@ -323,7 +419,18 @@ export function AgentContent({ content, showInlineLoading = false }) {
                       style={{maxWidth: '100%', height: 'auto', borderRadius: '8px', marginTop: '8px', marginBottom: '8px'}}
                       loading="lazy"
                     />
-                  )
+                  ),
+                  code: ({node, inline, className, children, ...props}) => {
+                    const match = /language-(\w+)/.exec(className || '')
+                    const language = match ? match[1] : ''
+                    const codeContent = String(children).replace(/\n$/, '')
+                    
+                    if (!inline && (language === 'diff' || language === 'patch')) {
+                      return <DiffBlock content={codeContent} />
+                    }
+                    
+                    return <code className={className} {...props}>{children}</code>
+                  }
                 }}
               >
                 {part.content}

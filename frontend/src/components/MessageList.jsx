@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
-import { AgentContent, extractCanvasContent } from './AgentBlock'
+import { AgentContent, extractCanvasContent, DiffBlock } from './AgentBlock'
 import './MessageList.css'
 
 const MessageList = ({ messages, onScrollToBottom }) => {
@@ -97,7 +97,23 @@ const MessageList = ({ messages, onScrollToBottom }) => {
                               style={{maxWidth: '100%', height: 'auto', borderRadius: '8px', marginTop: '8px', marginBottom: '8px'}}
                               loading="lazy"
                             />
-                          )
+                          ),
+                          code: ({node, inline, className, children, ...props}) => {
+                            const match = /language-(\w+)/.exec(className || '')
+                            const language = match ? match[1] : ''
+                            const content = String(children).replace(/\n$/, '')
+                            
+                            if (!inline && (language === 'diff' || language === 'patch')) {
+                              return <DiffBlock content={content} />
+                            }
+                            
+                            // Default code rendering
+                            return inline ? (
+                              <code className={className} {...props}>{children}</code>
+                            ) : (
+                              <code className={className} {...props}>{children}</code>
+                            )
+                          }
                         }}
                       >
                         {displayContent}

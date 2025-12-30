@@ -269,8 +269,29 @@
   font-size: 0.95em;
   color: inherit;
   line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
+}
+
+/* Markdown content in highlight */
+.highlight-content > * {
+  margin: 0;
+}
+
+.highlight-content > * + * {
+  margin-top: 0.5em;
+}
+
+.highlight-content p {
+  margin: 0;
+}
+
+.highlight-content ul,
+.highlight-content ol {
+  margin: 0.3em 0;
+  padding-left: 1.5em;
+}
+
+.highlight-content li {
+  margin: 0.2em 0;
 }
 
 /* Dark mode: Original dark gray-green border */
@@ -279,19 +300,102 @@
   border-color: #3d4f3d;  /* Original dark gray-green border */
 }
 
-/* Remove extra margins from markdown content in highlight */
-.highlight-content > * {
-  margin: 0;
+/* Diff Block - VS Code style diff highlighting */
+.diff-block {
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 12px 0;
+  margin: 1em 0;
+  overflow-x: auto;
+  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
-.highlight-content > * + * {
-  margin-top: 0.75em;
+.diff-line {
+  display: flex;
+  padding: 0 16px;
+  min-height: 1.5em;
 }
 
-.highlight-content p {
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.6;
+.diff-prefix {
+  width: 20px;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.diff-text {
+  flex: 1;
+  white-space: pre;
+}
+
+/* Added lines - green */
+.diff-line.diff-add {
+  background: rgba(46, 160, 67, 0.15);
+}
+
+.diff-line.diff-add .diff-prefix {
+  color: #3fb950;
+}
+
+.diff-line.diff-add .diff-text {
+  color: #3fb950;
+}
+
+/* Removed lines - red */
+.diff-line.diff-remove {
+  background: rgba(248, 81, 73, 0.15);
+}
+
+.diff-line.diff-remove .diff-prefix {
+  color: #f85149;
+}
+
+.diff-line.diff-remove .diff-text {
+  color: #f85149;
+}
+
+/* Header lines (--- and +++) */
+.diff-line.diff-header {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+/* Hunk headers (@@ ... @@) */
+.diff-line.diff-hunk {
+  color: #8b949e;
+  background: rgba(56, 139, 253, 0.1);
+}
+
+/* Context lines */
+.diff-line.diff-context {
+  color: var(--text-primary);
+  opacity: 0.8;
+}
+
+/* Light mode adjustments */
+[data-theme="light"] .diff-line.diff-add {
+  background: rgba(46, 160, 67, 0.12);
+}
+
+[data-theme="light"] .diff-line.diff-add .diff-prefix,
+[data-theme="light"] .diff-line.diff-add .diff-text {
+  color: #1a7f37;
+}
+
+[data-theme="light"] .diff-line.diff-remove {
+  background: rgba(248, 81, 73, 0.12);
+}
+
+[data-theme="light"] .diff-line.diff-remove .diff-prefix,
+[data-theme="light"] .diff-line.diff-remove .diff-text {
+  color: #cf222e;
+}
+
+[data-theme="light"] .diff-line.diff-hunk {
+  color: #57606a;
+  background: rgba(56, 139, 253, 0.08);
 }
 
 

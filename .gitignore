@@ -17,8 +17,6 @@ node_modules/
 dist/
 build/
 .DS_Store
-benchmarks/
-eval_outputs/
 
 # IDE
 .vscode/
@@ -35,6 +33,7 @@ eval_outputs/
 # Sensitive files - DO NOT COMMIT
 key
 openaikey
+babel_key
 *.key
 *.pem
 *.crt
@@ -42,4 +41,6 @@ openaikey
 # Files with hardcoded API keys
 agent_service/search/test.py
 agent_service/search/server.py
-runtime_service/swebench_env_impl/logs/*
+
+
+

@@ -1,7 +1,12 @@
 import json
 from typing import Any, Tuple
 
-from .swebench_env_impl.core import SweBenchInteractiveEnv
+# Use absolute import to work when imported as a module
+try:
+    from swebench_env_impl.core import SweBenchInteractiveEnv
+except ImportError:
+    # Fallback for when imported from parent directory
+    from runtime_service.swebench_env_impl.core import SweBenchInteractiveEnv
 
 # Meta information about this environment module
 meta_info = "Interactive SWE-bench environment (problem-centric, repo-aware, no tests by default)"
