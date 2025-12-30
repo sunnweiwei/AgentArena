@@ -195,7 +195,7 @@ def get_observations(env) -> str:
     return env.get_observations()
 
 
-def env_step(env, fn_call: dict) -> str:
+def env_step(env: SweBenchEnvProxy, fn_call: dict) -> str:
     """
     Submit human response to the workspace/server.
     
@@ -228,7 +228,7 @@ def env_step(env, fn_call: dict) -> str:
     else:
         raise ValueError(f"Invalid result type: {type(result)}")
 
-def get_reward(env, **kwargs: Any) -> float:
+def get_reward(env: SweBenchEnvProxy, **kwargs: Any) -> float:
     """
     Get the current reward for the SWE-bench environment.
 

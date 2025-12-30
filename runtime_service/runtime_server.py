@@ -27,6 +27,9 @@ def load_env_module(env_type: str):
     elif env_type == 'repo':
         import repo_env
         return repo_env
+    elif env_type == 'swe':
+        import swebench_env_remote
+        return swebench_env_remote
     # Add more elif blocks for other environment types
     # elif env_type == 'custom':
     #     import custom_env
