@@ -3,8 +3,7 @@ import runtime_service.swebench_env_remote as swebench_env_remote
 env, meta = swebench_env_remote.create_env(
     dataset_name="princeton-nlp/SWE-bench_Verified",
     instance_id="django__django-11333",
-    interactive_api_port=8053,  # 可选
-    server_url="http://localhost:8132"  # 可选
+    server_url="http://localhost:8132"
 )
 
 print(f"Created env with session_id: {env.session_id}")
