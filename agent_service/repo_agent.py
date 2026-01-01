@@ -101,7 +101,7 @@ Notes for using the `str_replace` command:
                         'type': 'string',
                     },
                     'path': {
-                        'description': 'Absolute path to file or directory, e.g. `/workspace/file.py` or `/workspace`.',
+                        'description': 'Absolute path to file or directory, e.g. `/testbed/file.py` or `/testbed`.',
                         'type': 'string',
                     },
                     'file_text': {
@@ -182,12 +182,14 @@ class RepoEnv(BaseEnv):
                 if content:
                     fn_call = extract_fn_call(content)
                     if fn_call is not None and isinstance(fn_call, list) and len(fn_call) > 0:
-                        actions.append(fn_call)
+                        # Flatten: each function call is a separate action
+                        actions.extend(fn_call)
 
         self.create()
-        for fn_call in actions:
+        # Execute each function call one by one
+        for single_fn in actions:
             try:
-                self._execute_step({'response': fn_call_to_text(fn_call)})
+                self._execute_step({'response': fn_call_to_text(single_fn)})
             except Exception as e:
                 pass
 
@@ -241,14 +243,36 @@ class RepoEnv(BaseEnv):
         difficulty = instance_info.get('difficulty', '')
         instance_id = instance_info.get('instance_id', 'unknown')
         repo = instance_info.get('repo', 'unknown')
+        base_commit = instance_info.get('base_commit', '')
         oracle_patch = instance_info.get('patch', '')
-        
+
         canvas = "## SWE-bench Task\n\n"
         canvas += f"**Instance ID:** `{instance_id}`  \n"
         canvas += f"**Repository:** `{repo}`  \n"
+        # Add GitHub link on a new line if base_commit is available
+        if base_commit:
+            canvas += f"**Base Commit:** [{base_commit[:8]}](https://github.com/{repo}/tree/{base_commit})  \n"
         if difficulty:
             canvas += f"**Difficulty:** {difficulty}  \n"
         canvas += "\n---\n\n"
+        
+        def ensure_line_breaks(text):
+            """Add two spaces before single newlines to ensure markdown line breaks"""
+            # Preserve double newlines (paragraphs) and code blocks
+            import re
+            # Split by code blocks to preserve them
+            parts = re.split(r'(```[\s\S]*?```)', text)
+            result = []
+            for i, part in enumerate(parts):
+                if part.startswith('```'):
+                    # Code block - keep as is
+                    result.append(part)
+                else:
+                    # Regular text - add line breaks
+                    # Replace single \n (not \n\n) with two spaces + \n
+                    processed = re.sub(r'(?<!\n)\n(?!\n)', '  \n', part)
+                    result.append(processed)
+            return ''.join(result)
         
         if problem_statement:
             # Problem statement is GitHub issue markdown
@@ -258,6 +282,8 @@ class RepoEnv(BaseEnv):
             problem_cleaned = problem_cleaned.replace('\n# ', '\n### ')
             problem_cleaned = problem_cleaned.replace('\n## ', '\n#### ')
             problem_cleaned = problem_cleaned.replace('\n### ', '\n##### ')
+            # Ensure single newlines render as line breaks
+            problem_cleaned = ensure_line_breaks(problem_cleaned)
             canvas += "### Problem Statement\n\n"
             canvas += problem_cleaned + "\n\n"
             canvas += "---\n\n"
@@ -269,6 +295,8 @@ class RepoEnv(BaseEnv):
             hints_cleaned = hints_cleaned.replace('\n# ', '\n### ')
             hints_cleaned = hints_cleaned.replace('\n## ', '\n#### ')
             hints_cleaned = hints_cleaned.replace('\n### ', '\n##### ')
+            # Ensure single newlines render as line breaks
+            hints_cleaned = ensure_line_breaks(hints_cleaned)
             canvas += "### Hints\n\n"
             canvas += hints_cleaned + "\n\n"
             canvas += "---\n\n"
@@ -276,7 +304,7 @@ class RepoEnv(BaseEnv):
         if oracle_patch:
             # Patch is a diff format, display in diff code block
             canvas += "### Golden Patch\n\n"
-            canvas += f"```\n{oracle_patch}\n```\n\n"
+            canvas += f"```diff\n{oracle_patch}\n```\n\n"
             canvas += "---\n\n"
         
         canvas += f"**Runtime ID:** `{self.runtime_id}`\n\n"
@@ -350,8 +378,8 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
         instance_info = random.choice(swe_data)
         instance_id = instance_info.get('instance_id', 'unknown')
     
-    # Create env_str from instance_info
-    env_str = f"RepairEnv@{json.dumps(instance_info)}"
+    # Create env_str from instance_info (using NewRepairEnv for cleaner symlink-based approach)
+    env_str = f"NewRepairEnv@{json.dumps(instance_info)}"
 
     repo_env = RepoEnv(env_str=env_str)
 
@@ -374,16 +402,18 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
     if existing_runtime_id != repo_env.runtime_id:
         yield '<|canvas|>' + repo_env.get_canvas(instance_info) + '<|/canvas|>'
 
-    # Special handling for \repo command
-    if len(conversation) == 1 and conversation[0]['content'].startswith("\\repo"):
+    # Special handling for \repo or /repo command
+    if len(conversation) == 1 and (conversation[0]['content'].startswith("\\repo") or conversation[0]['content'].startswith("/repo")):
         yield "Hi there. How can I help you today?"
         return
 
-    if conversation[-1]['content'] == '\\patch':
+    last_content = conversation[-1]['content']
+    if last_content == '\\patch' or last_content == '/patch':
         # Generate and return the patch
         try:
-            # Call step with \patch action - repo_env will handle it and return the patch
+            # Call step with \patch or /patch action - repo_env will handle it and return the patch
             # Pass the string directly, not as a dict, since step() expects a string
+            # Normalize to \patch for the step call
             patch_result = repo_env.step('\\patch', conversation=conversation)
             yield f"```diff\n{patch_result}\n```"
         except RuntimeServiceError as e:
@@ -392,7 +422,7 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
             yield f"⚠️ Error generating patch: {e}"
         return
 
-    if conversation[-1]['content'] == '\\reward' or '###STOP###' in conversation[-1]['content']:
+    if last_content == '\\reward' or last_content == '/reward' or '###STOP###' in last_content:
         try:
             reward = repo_env.get_reward(
                 label_answer=instance_info.get('patch', ''),
@@ -462,11 +492,21 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
         finish_message = None
         if fn_call is not None and isinstance(fn_call, list) and len(fn_call) > 0:
             try:
-                observation = repo_env.step(fn_call_to_text(fn_call), conversation=chat)
+                # Execute each tool call one by one and collect results
+                observations = []
+                for single_fn in fn_call:
+                    obs = repo_env.step(fn_call_to_text(single_fn), conversation=chat)
+                    observations.append(obs)
+                    if single_fn['name'] == 'finish':
+                        finish_message = single_fn['arguments'].get('message', '')
+                
+                # Concatenate all observations
+                if len(observations) == 1:
+                    observation = observations[0]
+                else:
+                    observation = '\n\n---\n\n'.join(observations)
+                
                 yield {'info': f'runtime_id: {repo_env.runtime_id}'}
-                for fn in fn_call:
-                    if fn['name'] == 'finish':
-                        finish_message = fn['arguments'].get('message', '')
 
             except RuntimeServiceError as e:
                 yield f"\n\n⚠️ **Runtime Service Unavailable**\n\nCould not execute tool call. The environment service is temporarily unavailable. Please try again.\n\nError: {e}"
@@ -475,7 +515,8 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
                 observation = f"Error executing tool: {e}"
 
         if observation is None:
-            observation = "No function call was detected. You must immediately call a tool (execute_bash, str_replace_editor, think, or finish) to continue working on the repository. Do not ask for confirmation - proceed directly with your next tool call. Use finish tool when the task is complete."
+            return
+            # observation = "No function call was detected. You must immediately call a tool (execute_bash, str_replace_editor, think, or finish) to continue working on the repository. Do not ask for confirmation - proceed directly with your next tool call. Use finish tool when the task is complete."
         chat.append({'role': 'user', 'content': observation})
         yield '<|tool|>' + observation + '<|/tool|>'
         

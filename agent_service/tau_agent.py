@@ -94,12 +94,13 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
     if existing_runtime_id != tau_env.runtime_id:
         yield '<|canvas|>' + tau_env.get_canvas() + '<|/canvas|>'
 
-    # Special handling for \tau command
-    if len(conversation) == 1 and conversation[0]['content'].startswith("\\tau"):
+    # Special handling for \tau or /tau command
+    if len(conversation) == 1 and (conversation[0]['content'].startswith("\\tau") or conversation[0]['content'].startswith("/tau")):
         yield "Hi there. How can I help you today?"
         return
 
-    if conversation[-1]['content'] == '\\reward' or '###STOP###' in conversation[-1]['content']:
+    last_content = conversation[-1]['content']
+    if last_content == '\\reward' or last_content == '/reward' or '###STOP###' in last_content:
         try:
             reward = tau_env.get_reward()
             yield f"Reward: {reward}"

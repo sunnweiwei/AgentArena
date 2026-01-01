@@ -12,6 +12,7 @@ from search_agent import agent_loop as search_agent_loop
 from tau_agent import agent_loop as tau_agent_loop
 from bc_agent import agent_loop as bc_agent_loop
 from repo_agent import agent_loop as repo_agent_loop
+from swe_agent import agent_loop as swe_agent_loop
 import json
 import os
 
@@ -184,12 +185,17 @@ async def chat_completions(request: ChatRequest):
     OpenAI-compatible chat completions endpoint with streaming support.
     """
     conversation = [msg.dict() for msg in request.messages]
-    if conversation[0]['role'] == 'user' and conversation[0]['content'].startswith('\\tau'):
+    # Support both \ and / for command prefixes
+    first_content = conversation[0]['content'] if conversation else ''
+    
+    if conversation[0]['role'] == 'user' and (first_content.startswith('\\tau') or first_content.startswith('/tau')):
         selected_agent_loop = tau_agent_loop
-    elif conversation[0]['role'] == 'user' and conversation[0]['content'].startswith('\\bc'):
+    elif conversation[0]['role'] == 'user' and (first_content.startswith('\\bc') or first_content.startswith('/bc')):
         selected_agent_loop = bc_agent_loop
-    elif conversation[0]['role'] == 'user' and conversation[0]['content'].startswith('\\repo'):
+    elif conversation[0]['role'] == 'user' and (first_content.startswith('\\repo') or first_content.startswith('/repo')):
         selected_agent_loop = repo_agent_loop
+    elif conversation[0]['role'] == 'user' and (first_content.startswith('\\swe') or first_content.startswith('/swe')):
+        selected_agent_loop = swe_agent_loop
     else:
         selected_agent_loop = search_agent_loop
     if request.stream:

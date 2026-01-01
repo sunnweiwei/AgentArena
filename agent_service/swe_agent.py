@@ -270,11 +270,15 @@ class SWEEnv(BaseEnv):
         difficulty = instance_info.get('difficulty', '')
         instance_id = instance_info.get('instance_id', 'unknown')
         repo = instance_info.get('repo', 'unknown')
+        base_commit = instance_info.get('base_commit', '')
         oracle_patch = instance_info.get('patch', '')
 
         canvas = "## SWE-bench Task\n\n"
         canvas += f"**Instance ID:** `{instance_id}`  \n"
         canvas += f"**Repository:** `{repo}`  \n"
+        # Add GitHub link on a new line if base_commit is available
+        if base_commit:
+            canvas += f"**Base Commit:** [{base_commit[:8]}](https://github.com/{repo}/tree/{base_commit})  \n"
         if difficulty:
             canvas += f"**Difficulty:** {difficulty}  \n"
         canvas += "\n---\n\n"
@@ -305,7 +309,7 @@ class SWEEnv(BaseEnv):
         if oracle_patch:
             # Patch is a diff format, display in diff code block
             canvas += "### Golden Patch\n\n"
-            canvas += f"```\n{oracle_patch}\n```\n\n"
+            canvas += f"```diff\n{oracle_patch}\n```\n\n"
             canvas += "---\n\n"
 
         canvas += f"**Runtime ID:** `{self.runtime_id}`\n\n"
@@ -379,11 +383,12 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
         yield '<|canvas|>' + swe_env.get_canvas(instance_info) + '<|/canvas|>'
 
     # Special handling for \repo command
-    if len(conversation) == 1 and conversation[0]['content'].startswith("\\swe"):
+    if len(conversation) == 1 and (conversation[0]['content'].startswith("\\swe") or conversation[0]['content'].startswith("/swe")):
         yield "Hi there. How can I help you today?"
         return
 
-    if conversation[-1]['content'] == '\\reward' or '###STOP###' in conversation[-1]['content']:
+    last_content = conversation[-1]['content']
+    if last_content == '\\reward' or last_content == '/reward' or '###STOP###' in last_content:
         try:
             reward = swe_env.get_reward(
                 label_answer=instance_info.get('patch', ''),

@@ -1,9 +1,39 @@
 from tau_bench.envs import get_env
 from tau_bench.types import Action
 import json
+import os
 
 # Meta information about this environment module
 meta_info = "Tau-bench environment for airline and retail customer service tasks"
+
+
+def _ensure_openai_api_key():
+    """
+    Ensure OPENAI_API_KEY is set in environment.
+    If not set, try to load from openaikey file.
+    """
+    if os.getenv("OPENAI_API_KEY"):
+        return  # Already set
+    
+    # Try to load from file (same location as other services)
+    key_paths = [
+        os.path.join(os.path.dirname(__file__), '..', 'openaikey'),
+        '/usr1/data/weiweis/chat_server/openaikey',
+    ]
+    
+    for key_path in key_paths:
+        if os.path.exists(key_path):
+            try:
+                with open(key_path, 'r') as f:
+                    api_key = f.read().strip()
+                    if api_key:
+                        os.environ["OPENAI_API_KEY"] = api_key
+                        print(f"[tau_env] Loaded OPENAI_API_KEY from {key_path}")
+                        return
+            except Exception as e:
+                print(f"[tau_env] Warning: Could not load OpenAI API key from {key_path}: {e}")
+    
+    print("[tau_env] Warning: OPENAI_API_KEY not found in environment or file")
 
 
 def convert_value_to_type(value, expected_type):
@@ -100,6 +130,9 @@ def convert_arguments_by_schema(function_name, arguments, tools_info):
 
 
 def create_env(env_name='airline', task_index=None):
+    # Ensure OPENAI_API_KEY is set before creating environment
+    _ensure_openai_api_key()
+    
     env = get_env(
         env_name,
         user_strategy='llm',

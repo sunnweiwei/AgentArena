@@ -16,32 +16,72 @@
   padding: 20px;
   display: flex;
   gap: 20px;
-  justify-content: center;
 }
 
-.message.user {
-  background: var(--bg-tertiary);
-}
-
+/* AI messages: full width with centered content */
 .message.assistant {
   background: var(--bg-primary);
-}
-
-[data-theme="light"] .message.user {
-  background: #f1f2f5;
+  justify-content: center;
 }
 
 [data-theme="light"] .message.assistant {
   background: #ffffff;
 }
 
+/* User messages: chat bubble style aligned right within container */
+.message.user {
+  background: transparent;
+  justify-content: center;
+  padding: 8px 20px;
+}
+
 .message-content {
-  width: 100%;
-  max-width: 980px;
   color: var(--text-primary);
   font-size: 16px;
   line-height: 1.75;
   word-wrap: break-word;
+}
+
+/* AI message content: centered with max width */
+.message.assistant .message-content {
+  width: 100%;
+  max-width: 980px;
+}
+
+/* User message content: container aligned to center like AI messages */
+.message.user .message-content {
+  width: 100%;
+  max-width: 980px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* The actual bubble styling */
+.user-bubble {
+  max-width: 735px; /* 75% of 980px */
+  background: var(--bg-tertiary);
+  padding: 12px 16px;
+  border-radius: 18px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Keep original colors */
+[data-theme="light"] .user-bubble {
+  background: #f1f2f5;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* Tighter spacing for user message bubbles */
+.user-bubble p {
+  margin: 0 0 0.5em 0;
+}
+
+.user-bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.user-bubble code {
+  font-size: 0.875em;
 }
 
 /* Markdown styling */
@@ -259,13 +299,23 @@
     padding-top: calc(var(--chat-header-height) + 20px);
   }
 
-  .message {
+  .message.assistant {
     padding: 16px;
     gap: 12px;
   }
 
+  .message.user {
+    padding: 6px 16px;
+  }
+
   .message-content {
     font-size: 15px;
+  }
+
+  .user-bubble {
+    max-width: 85%; /* Slightly wider on mobile */
+    padding: 10px 14px;
+    border-radius: 16px;
   }
 }
 

@@ -43,7 +43,25 @@ const CanvasDisplay = ({ messages }) => {
             ) : (
               <code className={className} {...props}>{children}</code>
             )
-          }
+          },
+          a: ({node, href, children, ...props}) => (
+            <a 
+              href={href} 
+              onClick={(e) => {
+                e.preventDefault()
+                // Open in a smaller popup window
+                const width = Math.min(1200, window.screen.width * 0.7)
+                const height = Math.min(800, window.screen.height * 0.8)
+                const left = (window.screen.width - width) / 2
+                const top = (window.screen.height - height) / 2
+                window.open(href, '_blank', `width=${width},height=${height},left=${left},top=${top},scrollbars=yes,resizable=yes`)
+              }}
+              {...props} 
+              style={{color: '#0066cc', textDecoration: 'underline', cursor: 'pointer'}}
+            >
+              {children}
+            </a>
+          )
         }}
       >
         {canvasContent}

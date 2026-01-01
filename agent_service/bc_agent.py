@@ -279,12 +279,13 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
     if existing_runtime_id != bc_env.runtime_id:
         yield '<|canvas|>' + bc_env.get_canvas(data_source) + '<|/canvas|>'
 
-    # Special handling for \tau command
-    if len(conversation) == 1 and conversation[0]['content'].startswith("\\bc"):
+    # Special handling for \bc or /bc command
+    if len(conversation) == 1 and (conversation[0]['content'].startswith("\\bc") or conversation[0]['content'].startswith("/bc")):
         yield "Hi there. How can I help you today?"
         return
 
-    if conversation[-1]['content'] == '\\reward' or '###STOP###' in conversation[-1]['content']:
+    last_content = conversation[-1]['content']
+    if last_content == '\\reward' or last_content == '/reward' or '###STOP###' in last_content:
         try:
             reward = bc_env.get_reward(label_answer=label_answer, predicted_answer=predicted_answer, explanation=explanation, confidence=confidence)
             yield f"Reward: {reward}"
