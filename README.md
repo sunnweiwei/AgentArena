@@ -250,6 +250,63 @@ cd frontend && npm run dev
 | BC Server | 8010 | HTTP |
 | Repo Server | 8011 | HTTP |
 
+## Survey System Configuration
+
+AgentArena includes a post-task survey system to collect user feedback on agent collaboration.
+
+### Environment Variables
+
+**Backend** (`.env`):
+```bash
+SURVEY_MODE=optional  # "optional" | "mandatory" | "disabled"
+```
+
+**Frontend** (`.env`):
+```bash
+VITE_SURVEY_MODE=optional  # "optional" | "mandatory" | "disabled"
+```
+
+### Survey Modes
+
+- **`disabled`**: Surveys are not shown to users
+- **`optional`**: Survey appears after task completion but can be skipped
+- **`mandatory`**: Survey must be completed before starting a new chat
+
+### Survey Content
+
+The survey measures two key dimensions:
+
+**Proactiveness:**
+- Does the agent ask clarifying questions when needed?
+- Are the agent's questions clear and easy to answer?
+
+**Personalization:**
+- Does the agent's behavior align with user preferences stated in instructions?
+
+Users provide:
+1. **Likert scale ratings** (1-5) for each dimension
+2. **Qualitative feedback** with specific examples to support their ratings
+3. **User preferences context**: The survey displays the user's stated preferences (meta_info) for reference
+
+### Database
+
+Survey responses are stored in the `survey_responses` table with:
+- Likert scale ratings for proactiveness and personalization
+- Qualitative feedback and specific examples
+- User preferences (meta_info) at the time of survey
+- Timestamps for analysis
+
+### API Endpoints
+
+- `POST /api/surveys` - Submit or update survey response
+- `GET /api/surveys/{chat_id}` - Get survey for specific chat (if exists)
+
+### Workflow
+
+1. **Optional Mode**: Survey appears when user creates a new chat, but can be skipped
+2. **Mandatory Mode**: Survey must be completed before allowing new chat creation
+3. **Disabled Mode**: No surveys shown
+
 ## Key Concepts
 
 ### Agent Loops

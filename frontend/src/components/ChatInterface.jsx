@@ -20,6 +20,7 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
   const [pendingChats, setPendingChats] = useState({})
   const [sharedChat, setSharedChat] = useState(null) // Shared chat data when viewing via share link
   const [shareToken, setShareToken] = useState(null) // Share token from URL
+  const [surveyRequestCallback, setSurveyRequestCallback] = useState(null)
   const canUseChat = Boolean(user && user.user_id)
 
   // Check for share token in URL
@@ -150,7 +151,34 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
     }
   }
 
+  // Helper function to check if survey is needed
+  const checkIfSurveyNeeded = async (chatId) => {
+    try {
+      const response = await axios.get(`/api/surveys/${chatId}`, {
+        params: { user_id: user.user_id }
+      })
+      return !response.data.exists
+    } catch (err) {
+      console.error('Failed to check survey:', err)
+      return false
+    }
+  }
+
   const createNewChat = async () => {
+    const surveyMode = import.meta.env.VITE_SURVEY_MODE || 'optional'
+
+    // In mandatory mode, check if current chat needs survey before creating new chat
+    if (surveyMode === 'mandatory' && currentChatId) {
+      const needsSurvey = await checkIfSurveyNeeded(currentChatId)
+      if (needsSurvey) {
+        // Trigger survey display via callback to ChatWindow
+        if (surveyRequestCallback) {
+          surveyRequestCallback(currentChatId)
+        }
+        return null // Block new chat creation until survey is submitted
+      }
+    }
+
     // If current chat exists and has no messages, reuse it instead of creating new one
     if (currentChatId) {
       try {
@@ -170,7 +198,14 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
         // Continue to create new chat if check fails
       }
     }
-    
+
+    // In optional mode, trigger survey check without blocking
+    if (surveyMode === 'optional' && currentChatId) {
+      if (surveyRequestCallback) {
+        surveyRequestCallback(currentChatId)
+      }
+    }
+
     // Create new chat only if current chat has messages or doesn't exist
     // Note: Don't add to sidebar yet - it will appear automatically when first message is sent
     try {
@@ -310,6 +345,7 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
         onChatPendingStateChange={handleChatPendingStateChange}
+        onSurveyRequested={setSurveyRequestCallback}
       />
     </div>
   )

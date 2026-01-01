@@ -84,7 +84,7 @@ class MCPServer(Base):
 
 class UserTool(Base):
     __tablename__ = "user_tools"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
     tool_name = Column(String, index=True)  # e.g., "search", "extract", "web_search"
@@ -92,10 +92,34 @@ class UserTool(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     user = relationship("User")
-    
+
     __table_args__ = (
         {'sqlite_autoincrement': True},
     )
+
+class SurveyResponse(Base):
+    __tablename__ = "survey_responses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    chat_id = Column(String, ForeignKey("chats.id"), index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+
+    # Likert scale responses (1-5)
+    proactiveness_questions = Column(Integer)  # Asked questions when needed
+    proactiveness_clarity = Column(Integer)     # Questions were clear
+    personalization_alignment = Column(Integer) # Followed preferences
+
+    # Qualitative feedback
+    feedback_text = Column(Text, nullable=True)
+    specific_examples = Column(Text, nullable=True)
+
+    # Context: user preferences at survey time
+    user_preferences_shown = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    chat = relationship("Chat", backref="survey_responses")
+    user = relationship("User")
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -116,6 +140,9 @@ TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "gpt-4o-transcribe")
 
 # Agent service URL - all models go through agent service
 AGENT_SERVICE_URL = os.getenv("AGENT_SERVICE_URL", "http://sf.lti.cs.cmu.edu:8001")
+
+# Survey configuration
+SURVEY_MODE = os.getenv("SURVEY_MODE", "optional")  # "optional", "mandatory", or "disabled"
 
 
 def _event_to_dict(event):
@@ -535,6 +562,15 @@ async def get_shared_chat(share_token: str, db: Session = Depends(get_db)):
         ]
     }
 
+# Survey Management Endpoints
+class SurveySubmission(BaseModel):
+    chat_id: str
+    proactiveness_questions: int  # 1-5
+    proactiveness_clarity: int    # 1-5
+    personalization_alignment: int # 1-5
+    feedback_text: Optional[str] = None
+    specific_examples: Optional[str] = None
+
 # MCP Server Management Endpoints
 class MCPServerCreate(BaseModel):
     name: str
@@ -644,6 +680,72 @@ async def get_mcp_server_tools(server_id: str, user_id: int, db: Session = Depen
             return {"tools": [], "error": "Failed to connect to MCP server"}
     except Exception as e:
         return {"tools": [], "error": str(e)}
+
+# Survey Endpoints
+@app.post("/api/surveys")
+async def submit_survey(survey: SurveySubmission, user_id: int, db: Session = Depends(get_db)):
+    """Submit or update a post-task survey response"""
+    # Validate chat belongs to user
+    chat = db.query(Chat).filter(Chat.id == survey.chat_id, Chat.user_id == user_id).first()
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    # Check if survey already exists for this chat
+    existing = db.query(SurveyResponse).filter(
+        SurveyResponse.chat_id == survey.chat_id,
+        SurveyResponse.user_id == user_id
+    ).first()
+
+    if existing:
+        # Update existing survey
+        existing.proactiveness_questions = survey.proactiveness_questions
+        existing.proactiveness_clarity = survey.proactiveness_clarity
+        existing.personalization_alignment = survey.personalization_alignment
+        existing.feedback_text = survey.feedback_text
+        existing.specific_examples = survey.specific_examples
+        existing.user_preferences_shown = chat.meta_info
+        db.commit()
+        return {"message": "Survey updated", "survey_id": existing.id}
+    else:
+        # Create new survey response
+        response = SurveyResponse(
+            chat_id=survey.chat_id,
+            user_id=user_id,
+            proactiveness_questions=survey.proactiveness_questions,
+            proactiveness_clarity=survey.proactiveness_clarity,
+            personalization_alignment=survey.personalization_alignment,
+            feedback_text=survey.feedback_text,
+            specific_examples=survey.specific_examples,
+            user_preferences_shown=chat.meta_info
+        )
+        db.add(response)
+        db.commit()
+        db.refresh(response)
+        return {"message": "Survey submitted", "survey_id": response.id}
+
+@app.get("/api/surveys/{chat_id}")
+async def get_survey(chat_id: str, user_id: int, db: Session = Depends(get_db)):
+    """Get survey response for a specific chat (if exists)"""
+    survey = db.query(SurveyResponse).filter(
+        SurveyResponse.chat_id == chat_id,
+        SurveyResponse.user_id == user_id
+    ).first()
+
+    if not survey:
+        return {"exists": False}
+
+    return {
+        "exists": True,
+        "survey": {
+            "id": survey.id,
+            "proactiveness_questions": survey.proactiveness_questions,
+            "proactiveness_clarity": survey.proactiveness_clarity,
+            "personalization_alignment": survey.personalization_alignment,
+            "feedback_text": survey.feedback_text,
+            "specific_examples": survey.specific_examples,
+            "created_at": survey.created_at.isoformat()
+        }
+    }
 
 @app.post("/api/chats/{chat_id}/messages")
 async def add_message(chat_id: str, content: str, role: str, user_id: int, db: Session = Depends(get_db)):
