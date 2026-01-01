@@ -15,6 +15,9 @@ import secrets
 from openai import OpenAI
 import aiohttp
 import json
+from stream_manager import StreamManager, StreamState
+
+stream_manager = StreamManager()
 
 # Database setup with connection pooling
 SQLALCHEMY_DATABASE_URL = "sqlite:///./chat_data.db"
@@ -187,6 +190,13 @@ def _extract_error_from_response_event(event):
 
 # FastAPI app
 app = FastAPI()
+
+# Startup event to initialize stream manager
+@app.on_event("startup")
+async def startup_event():
+    """Initialize stream manager cleanup task"""
+    await stream_manager.start_cleanup_task()
+    print("[Startup] Stream manager cleanup task started")
 
 # CORS middleware
 # Allow all origins for cloud hosting (frontend may be on different server)
@@ -405,6 +415,18 @@ async def get_user_chats(user_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         import traceback
         print(f"Error in get_user_chats: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/api/active_streams")
+async def get_active_streams(user_id: int):
+    """Get all active streams for a user"""
+    try:
+        active_streams = await stream_manager.get_active_streams_for_user(user_id)
+        return {"active_streams": active_streams}
+    except Exception as e:
+        import traceback
+        print(f"Error in get_active_streams: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
@@ -820,6 +842,45 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 elif msg_type == "mcp_tool_call":
                     # This shouldn't happen - frontend sends results, not requests
                     pass
+                
+                elif msg_type == "subscribe":
+                    # Subscribe to an existing stream or check for active stream for a chat
+                    chat_id_to_subscribe = data.get("chat_id")
+                    stream_id_to_subscribe = data.get("stream_id")
+                    
+                    print(f"[WS] Subscribe request: chat_id={chat_id_to_subscribe}, stream_id={stream_id_to_subscribe}")
+                    
+                    stream_state = None
+                    if stream_id_to_subscribe:
+                        # Subscribe to specific stream
+                        stream_state = await stream_manager.get_stream(stream_id_to_subscribe)
+                    elif chat_id_to_subscribe:
+                        # Find active stream for chat
+                        stream_state = await stream_manager.get_active_stream_for_chat(chat_id_to_subscribe)
+                    
+                    if stream_state:
+                        print(f"[WS] Subscribing to stream {stream_state.stream_id}, is_complete={stream_state.is_complete}")
+                        await stream_state.subscribe(websocket)
+                        # Only send confirmation if stream is NOT complete
+                        # If complete, subscribe() already sent message_complete
+                        if not stream_state.is_complete:
+                            await manager.send_personal_message({
+                                "type": "subscription_confirmed",
+                                "stream_id": stream_state.stream_id,
+                                "chat_id": stream_state.chat_id
+                            }, websocket)
+                        else:
+                            print(f"[WS] Stream {stream_state.stream_id} is already complete, not sending subscription_confirmed")
+                    else:
+                        print(f"[WS] No active stream found")
+                        # Send a notification that there's no active stream
+                        try:
+                            await manager.send_personal_message({
+                                "type": "no_active_stream",
+                                "chat_id": chat_id_to_subscribe
+                            }, websocket)
+                        except Exception as e:
+                            print(f"[WS] Failed to send no_active_stream message: {e}")
                     
                 elif msg_type == "stop":
                     # Handle stop generation request
@@ -828,11 +889,18 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     
                     print(f"[WS] Stop request received. stream_id={stream_id_to_stop}, chat_id={chat_id_to_stop}")
                     
-                    # Add to cancelled set
+                    # Cancel in stream manager
                     if stream_id_to_stop:
+                        await stream_manager.cancel_stream(stream_id_to_stop)
                         cancelled_streams.add(stream_id_to_stop)
+                    elif chat_id_to_stop:
+                        # Find active stream for chat
+                        stream_state = await stream_manager.get_active_stream_for_chat(chat_id_to_stop)
+                        if stream_state:
+                            await stream_manager.cancel_stream(stream_state.stream_id)
+                            cancelled_streams.add(stream_state.stream_id)
                     
-                    # Find and cancel the task
+                    # Also cancel the task (legacy support)
                     task_to_cancel = None
                     if stream_id_to_stop and stream_id_to_stop in active_streams:
                         task_to_cancel = active_streams.get(stream_id_to_stop)
@@ -841,7 +909,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         for sid, task in list(active_streams.items()):
                             if sid.startswith(f"stream-{chat_id_to_stop}-"):
                                 task_to_cancel = task
-                                cancelled_streams.add(sid)
                                 break
                     
                     if task_to_cancel and not task_to_cancel.done():
@@ -878,33 +945,18 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             pass
 
 
-async def call_external_model_api(api_url: str, messages_history: list, websocket: WebSocket, chat_id: str, user_id: int, stream_id: str, meta_info: str = "", cancelled_streams: set = None, enabled_tools: dict = None, model: str = "Auto"):
+async def run_stream_in_background(stream_state: StreamState, api_url: str, messages_history: list, chat_id: str, user_id: int, meta_info: str, enabled_tools: dict, model: str):
     """
-    Generic function to call any external model API with OpenAI-compatible streaming.
-    Handles streaming response from external API servers.
-    
-    Args:
-        api_url: Base URL of the external API server
-        messages_history: Conversation history
-        websocket: WebSocket connection to client
-        chat_id: Chat identifier
-        user_id: User identifier
-        stream_id: Stream identifier
-        meta_info: Meta information for agent context
-        cancelled_streams: Set of cancelled stream IDs
-        enabled_tools: Dict of tool_name -> enabled (True/False)
-        model: Model name selected by user
+    Run agent stream in background, accumulating content in StreamState.
+    This allows the stream to continue even if clients disconnect.
+    Multiple clients can subscribe and all see the accumulated content.
     """
     full_response = ""
     chunk_index = 0
-    cancelled_streams = cancelled_streams or set()
-    was_cancelled = False
     
     try:
-        # Prepare request (OpenAI-compatible format)
         # Load enabled MCP servers for this user
         mcp_servers = []
-        # enabled_tools is passed from the WebSocket message - don't overwrite it!
         with SessionLocal() as db:
             enabled_servers = db.query(MCPServer).filter(
                 MCPServer.user_id == user_id,
@@ -918,13 +970,6 @@ async def call_external_model_api(api_url: str, messages_history: list, websocke
                     "args": json.loads(server.args),
                     "env": json.loads(server.env) if server.env else None,
                 })
-            
-        # Get enabled_tools from function parameter (passed from WebSocket message)
-        # Default to empty dict (all tools enabled) if not provided
-        if enabled_tools is None:
-            enabled_tools = {}
-        
-        print(f"[handle_chat_message] enabled_tools being sent to agent: {enabled_tools}")
         
         request_payload = {
             "messages": messages_history,
@@ -932,30 +977,52 @@ async def call_external_model_api(api_url: str, messages_history: list, websocke
             "meta_info": meta_info,
             "user_id": user_id,
             "mcp_servers": mcp_servers,
-            "enabled_tools": enabled_tools,  # Pass tool preferences to agent
-            "model": model  # Pass model selection to agent
+            "enabled_tools": enabled_tools or {},
+            "model": model
         }
-        print(f"[call_external_model_api] request_payload model: {model}, enabled_tools: {enabled_tools}")
         
-        # Call external API with streaming
+        print(f"[BackgroundStream] Starting stream {stream_state.stream_id} for chat {chat_id}")
+        
+        # Call agent service with streaming
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{api_url}/v1/chat/completions",
                 json=request_payload,
-                timeout=aiohttp.ClientTimeout(total=7200)  # 2 hour timeout for long agent tasks
+                timeout=aiohttp.ClientTimeout(total=7200)  # 2 hour timeout
             ) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    raise RuntimeError(f"External API error: {response.status} - {error_text}")
+                    await stream_state.mark_error(f"Agent service error: {response.status} - {error_text}")
+                    return
                 
-                # Process streaming response (SSE format) - read line by line
+                # Process streaming response
                 buffer = b""
                 async for chunk in response.content.iter_any():
                     # Check for cancellation
-                    if stream_id in cancelled_streams:
-                        print(f"[External API] Stream {stream_id} cancelled by user")
-                        was_cancelled = True
-                        break
+                    if stream_state.is_cancelled:
+                        print(f"[BackgroundStream] Stream {stream_state.stream_id} cancelled. Saving partial content...")
+                        # Save partial content to database before stopping
+                        if full_response:
+                            try:
+                                with SessionLocal() as db:
+                                    assistant_message = Message(
+                                        chat_id=chat_id,
+                                        role="assistant",
+                                        content=full_response
+                                    )
+                                    db.add(assistant_message)
+                                    
+                                    chat = db.query(Chat).filter(Chat.id == chat_id).first()
+                                    if chat:
+                                        chat.updated_at = datetime.utcnow()
+                                    
+                                    db.commit()
+                                    print(f"[BackgroundStream] Saved partial content ({len(full_response)} chars) to database")
+                            except Exception as db_err:
+                                print(f"[BackgroundStream] Error saving partial content: {db_err}")
+                        
+                        await stream_state.mark_complete()  # Mark complete instead of error
+                        return
                     
                     buffer += chunk
                     
@@ -967,40 +1034,31 @@ async def call_external_model_api(api_url: str, messages_history: list, websocke
                         if not line or line.startswith(':'):
                             continue
                         
+                        # Handle meta info updates
                         if line.startswith('info: '):
-                            # Handle meta info update
-                            info_str = line[6:]  # Remove 'info: ' prefix
+                            info_str = line[6:]
                             try:
-                                info_content = info_str
-                                
-                                if info_content:
-                                    print(f"[External API] Info update: {info_content[:100]}...")
-                                    
-                                    # Update meta_info in database
+                                if info_str:
+                                    # Update in database
                                     with SessionLocal() as db:
                                         chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
                                         if chat:
                                             current_meta = chat.meta_info or ""
                                             if len(current_meta) != 0:
-                                                chat.meta_info = current_meta + "\n\n" + info_content
+                                                chat.meta_info = current_meta + "\n\n" + info_str
                                             else:
-                                                chat.meta_info = current_meta + info_content
+                                                chat.meta_info = info_str
                                             db.commit()
                                     
-                                    # Send info update to client
-                                    await manager.send_personal_message({
-                                        "type": "meta_info_update",
-                                        "content": info_content,
-                                        "stream_id": stream_id,
-                                        "chat_id": chat_id
-                                    }, websocket)
-                            
-                            except json.JSONDecodeError:
-                                print(f"Failed to parse info JSON: {info_str}")
+                                    # Add to stream state
+                                    await stream_state.add_meta_info(info_str)
+                            except Exception as e:
+                                print(f"[BackgroundStream] Error processing meta info: {e}")
                             continue
                         
+                        # Handle content chunks
                         if line.startswith('data: '):
-                            data_str = line[6:]  # Remove 'data: ' prefix
+                            data_str = line[6:]
                             
                             if data_str == '[DONE]':
                                 break
@@ -1008,180 +1066,98 @@ async def call_external_model_api(api_url: str, messages_history: list, websocke
                             try:
                                 chunk_data = json.loads(data_str)
                                 
-                                # Check for errors
                                 if 'error' in chunk_data:
-                                    raise RuntimeError(f"API error: {chunk_data['error'].get('message', 'Unknown error')}")
+                                    error_msg = chunk_data['error'].get('message', 'Unknown error')
+                                    await stream_state.mark_error(f"Agent error: {error_msg}")
+                                    return
                                 
-                                # Extract content from OpenAI-like format
+                                # Extract content
                                 if 'choices' in chunk_data and len(chunk_data['choices']) > 0:
                                     delta = chunk_data['choices'][0].get('delta', {})
                                     content = delta.get('content', '')
                                     
                                     if content:
-                                        print(f"[External API] Chunk {chunk_index + 1}: {len(content)} chars")
-                                        full_response += content
-                                        
-                                        # Send chunk to client immediately
                                         chunk_index += 1
-                                        await manager.send_personal_message({
-                                            "type": "message_chunk",
-                                            "content": content,
-                                            "stream_id": stream_id,
-                                            "chunk_index": chunk_index,
-                                            "chat_id": chat_id
-                                        }, websocket)
+                                        full_response += content
+                                        # Add to stream state (this notifies all subscribers)
+                                        await stream_state.add_chunk(content)
                                     
-                                    # Check for finish_reason
+                                    # Check for completion
                                     finish_reason = chunk_data['choices'][0].get('finish_reason')
                                     if finish_reason == 'stop':
                                         break
                             
-                            except json.JSONDecodeError:
-                                print(f"Failed to parse JSON: {data_str}")
+                            except json.JSONDecodeError as e:
+                                print(f"[BackgroundStream] JSON decode error: {e}")
                                 continue
         
-        # Prepare the final content
-        final_content = full_response
+        # Stream completed successfully
+        print(f"[BackgroundStream] Stream {stream_state.stream_id} completed. Total: {len(full_response)} chars")
+        await stream_state.mark_complete()
         
-        # Save complete/partial message to database
-        with SessionLocal() as db:
-            chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
-            if not chat:
-                await manager.send_personal_message({
-                    "type": "error",
-                    "message": "Chat not found",
-                    "chat_id": chat_id
-                }, websocket)
-                return full_response
-            
-            message = Message(chat_id=chat_id, role="assistant", content=final_content)
-            db.add(message)
-            chat.updated_at = datetime.utcnow()
-            db.commit()
-            
-            # Send message complete with ID
-            status = "cancelled" if was_cancelled else "completed"
-            print(f"[External API] Response {status} for chat {chat_id} (stream {stream_id})")
-            await manager.send_personal_message({
-                "type": "message_complete",
-                "id": message.id,
-                "role": "assistant",
-                "content": final_content,
-                "created_at": message.created_at.isoformat(),
-                "stream_id": stream_id,
-                "chunk_count": chunk_index,
-                "chat_id": chat_id
-            }, websocket)
-        
-        return full_response
-        
+        # Save assistant message to database
+        try:
+            with SessionLocal() as db:
+                assistant_message = Message(
+                    chat_id=chat_id,
+                    role="assistant",
+                    content=full_response
+                )
+                db.add(assistant_message)
+                
+                chat = db.query(Chat).filter(Chat.id == chat_id).first()
+                if chat:
+                    chat.updated_at = datetime.utcnow()
+                
+                db.commit()
+                print(f"[BackgroundStream] Saved assistant message to database")
+        except Exception as db_err:
+            print(f"[BackgroundStream] Error saving to database: {db_err}")
+            # Don't fail the stream for database errors
+    
     except asyncio.CancelledError:
-        # Handle cancellation gracefully - save partial response
-        print(f"[External API] Task cancelled for stream {stream_id}")
-        final_content = full_response
-        if full_response.strip():
+        print(f"[BackgroundStream] Stream {stream_state.stream_id} cancelled via task cancellation. Saving partial content...")
+        # Save partial content to database
+        if full_response:
             try:
                 with SessionLocal() as db:
-                    chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+                    assistant_message = Message(
+                        chat_id=chat_id,
+                        role="assistant",
+                        content=full_response
+                    )
+                    db.add(assistant_message)
+                    
+                    chat = db.query(Chat).filter(Chat.id == chat_id).first()
                     if chat:
-                        message = Message(chat_id=chat_id, role="assistant", content=final_content)
-                        db.add(message)
                         chat.updated_at = datetime.utcnow()
-                        db.commit()
-                        
-                        await manager.send_personal_message({
-                            "type": "message_complete",
-                            "id": message.id,
-                            "role": "assistant",
-                            "content": final_content,
-                            "created_at": message.created_at.isoformat(),
-                            "stream_id": stream_id,
-                            "chat_id": chat_id
-                        }, websocket)
-            except Exception as save_err:
-                print(f"Error saving cancelled response: {save_err}")
-        else:
-            # No content - just send message_complete to close
-            try:
-                await manager.send_personal_message({
-                    "type": "message_complete",
-                    "id": None,
-                    "role": "assistant",
-                    "content": "*Generation stopped by user*",
-                    "created_at": datetime.utcnow().isoformat(),
-                    "stream_id": stream_id,
-                    "chat_id": chat_id
-                }, websocket)
-            except Exception:
-                pass
-        return full_response
+                    
+                    db.commit()
+                    print(f"[BackgroundStream] Saved partial content ({len(full_response)} chars) to database")
+            except Exception as db_err:
+                print(f"[BackgroundStream] Error saving partial content: {db_err}")
         
+        await stream_state.mark_complete()  # Mark complete instead of error
+        raise
+    
     except Exception as e:
         import traceback
-
-        # Log rich diagnostics about the external error
-        print(f"External API error: {e!r}")
-        print(f"External API error type: {type(e).__name__}")
+        print(f"[BackgroundStream] Error in stream {stream_state.stream_id}: {e}")
         traceback.print_exc()
+        await stream_state.mark_error(f"Stream error: {str(e)}")
 
-        error_msg = str(e) or type(e).__name__
-
-        # If we already have some content, preserve it and treat the error as partial failure
-        if full_response.strip():
-            # Append a short note to the end of the model output so the user
-            # sees the incomplete answer first, then the error notice.
-            short_msg = error_msg
-            if len(short_msg) > 300:
-                short_msg = short_msg[:300] + "..."
-            
-            response_with_note = (
-                full_response
-                + f"\n\n---\n⚠️ **Response incomplete**: {short_msg}"
-            )
-            try:
-                # Save the message to database FIRST, then send with proper ID
-                with SessionLocal() as db:
-                    chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
-                    if chat:
-                        message = Message(
-                            chat_id=chat_id,
-                            role="assistant",
-                            content=response_with_note,
-                            created_at=datetime.utcnow()
-                        )
-                        db.add(message)
-                        chat.updated_at = datetime.utcnow()
-                        db.commit()
-                        db.refresh(message)
-                        
-                        await manager.send_personal_message({
-                            "type": "message_complete",
-                            "id": message.id,
-                            "role": "assistant",
-                            "content": response_with_note,
-                            "created_at": message.created_at.isoformat(),
-                            "stream_id": stream_id,
-                            "chat_id": chat_id
-                        }, websocket)
-            except Exception as send_err:
-                print(f"Error saving/sending partial external response: {send_err}")
-            return full_response
-
-        # No content at all – behave like a hard failure
-        await manager.send_personal_message({
-            "type": "error",
-            "message": f"API error: {error_msg}",
-            "stream_id": stream_id,
-            "chat_id": chat_id
-        }, websocket)
-        return ""
 
 
 async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, content: str, model: str, meta_info: str = "", stream_id: str = None, cancelled_streams: set = None, enabled_tools: dict = None):
+    """
+    Handle incoming chat message. Creates a background stream that runs independently.
+    The websocket subscribes to the stream and receives updates.
+    """
     user_payload = None
-    stream_id = stream_id or str(uuid.uuid4())
+    stream_id = stream_id or f"stream-{chat_id}-{int(time.time() * 1000)}"
     cancelled_streams = cancelled_streams or set()
 
+    # Save user message to database
     try:
         with SessionLocal() as db:
             chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
@@ -1229,11 +1205,10 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
         except Exception as send_err:
             print(f"Error sending user message: {send_err}")
 
-    # Handle agent response - always forward to agent service
+    # Get conversation history
+    messages_history = []
+    chat_meta_info = ""
     try:
-        print(f"Received model: {model}, forwarding to agent service")
-        
-        # Get conversation history
         with SessionLocal() as db:
             chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
             if not chat:
@@ -1244,39 +1219,47 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
                 }, websocket)
                 return
             
-            # Build message history (user message already in chat.messages after commit)
-            messages_history = []
             for msg in chat.messages:
                 messages_history.append({"role": msg.role, "content": msg.content})
             
             chat_meta_info = chat.meta_info or ""
-        
-        # Start streaming response
-        start_time = time.time()
-        print(f"[TIMING] Agent API streaming started for chat {chat_id} (stream {stream_id}) at {start_time}")
+    except Exception as e:
+        print(f"Error loading chat history: {e}")
         await manager.send_personal_message({
-            "type": "message_start",
-            "role": "assistant",
-            "stream_id": stream_id,
+            "type": "error",
+            "message": "Failed to load chat history",
             "chat_id": chat_id
         }, websocket)
-        
-        # Stream response from agent service - pass model name
-        await call_external_model_api(AGENT_SERVICE_URL, messages_history, websocket, chat_id, user_id, stream_id, chat_meta_info, cancelled_streams, enabled_tools, model)
+        return
 
-    except Exception as agent_err:
-        import traceback
-        print(f"Error generating agent response: {agent_err!r}")
-        print(f"Agent error type: {type(agent_err).__name__}")
-        traceback.print_exc()
-        try:
-            await manager.send_personal_message({
-                "type": "error",
-                "message": f"Server error: {str(agent_err)}",
-                "chat_id": chat_id
-            }, websocket)
-        except Exception:
-            pass
+    # Create stream in stream manager
+    stream_state = await stream_manager.create_stream(stream_id, chat_id, user_id)
+    
+    # Start background stream runner
+    background_task = asyncio.create_task(
+        run_stream_in_background(
+            stream_state=stream_state,
+            api_url=AGENT_SERVICE_URL,
+            messages_history=messages_history,
+            chat_id=chat_id,
+            user_id=user_id,
+            meta_info=chat_meta_info,
+            enabled_tools=enabled_tools or {},
+            model=model
+        )
+    )
+    
+    # Store task in stream state so it can be cancelled
+    stream_state.task = background_task
+    
+    print(f"[handle_chat_message] Started background stream {stream_id} for chat {chat_id}")
+    
+    # Subscribe current websocket to the stream
+    # This will send message_start and any accumulated content
+    await stream_state.subscribe(websocket)
+    
+    # Note: The background task continues even if the websocket disconnects
+    # Other clients can subscribe to see the same stream
 
 @app.get("/")
 async def root():

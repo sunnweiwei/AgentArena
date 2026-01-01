@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import MessageList from './MessageList'
 import MessageInput from './MessageInput'
-import { getLastCanvasContent, DiffBlock } from './AgentBlock'
+import { getLastCanvasContent, DiffBlock, extractCanvasContent } from './AgentBlock'
 import './ChatWindow.css'
 
 const isDev = import.meta.env.DEV
@@ -101,6 +101,12 @@ const ChatWindow = ({
   sharedChatData = null,
   isSharedView = false
 }) => {
+  // Notify parent about streaming status changes
+  const notifyStreamingStatus = useCallback((isStreaming) => {
+    if (chatId && onChatPendingStateChange) {
+      onChatPendingStateChange(chatId, isStreaming)
+    }
+  }, [chatId, onChatPendingStateChange])
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(false)
   const [connected, setConnected] = useState(false)
@@ -132,6 +138,7 @@ const ChatWindow = ({
   const pendingWaitingMessageIdsRef = useRef([])
   const fetchMessagesRef = useRef(async () => {})
   const pendingStreamMetaRef = useRef({})
+  const lastSubscribeChatIdRef = useRef(null)
   const generateClientIdRef = useRef(0)
   const generateClientId = useCallback(() => {
     generateClientIdRef.current += 1
@@ -145,7 +152,11 @@ const ChatWindow = ({
           ...message,
           chatId: message.chatId ?? sourceChatId ?? null,
           clientId: message.clientId || (hasServerId ? `server-${message.id}` : generateClientId()),
-          isLoading: Boolean(message.isLoading)
+          // CRITICAL: Messages from database should NEVER have loading/streaming flags
+          // Always set them to false explicitly
+          isLoading: false,
+          isStreaming: false,
+          isOptimistic: false
         }
       }),
     [generateClientId, chatId]
@@ -178,10 +189,21 @@ const ChatWindow = ({
       return baseMessages
     }
     const cleaned = baseMessages.filter(msg => !(msg.role === 'assistant' && msg.isLoading && msg.isOptimistic))
+    
+    // Only apply pending placeholder if this chat doesn't already have a streaming OR loading message
+    // and is currently active
+    const hasActiveMessage = cleaned.some(m => m.isStreaming || m.isLoading)
     const pendingMeta = pendingStreamMetaRef.current[chatKey]
-    if (!pendingMeta) {
+    
+    if (!pendingMeta || hasActiveMessage || activeChatRef.current !== chatKey) {
+      if (pendingMeta && (hasActiveMessage || activeChatRef.current !== chatKey)) {
+        console.log('[applyPendingPlaceholder] ⚠️ Skipping placeholder - already has active message or not current chat')
+      }
       return cleaned
     }
+    
+    console.log('[applyPendingPlaceholder] ⚠️ Adding loading placeholder for chat:', chatKey)
+    
     const placeholderId = pendingMeta.waitingId || generateClientId()
     const placeholder = {
       id: placeholderId,
@@ -193,10 +215,8 @@ const ChatWindow = ({
       isOptimistic: true,
       created_at: pendingMeta.createdAt || new Date().toISOString()
     }
-    pendingStreamMetaRef.current[chatKey] = {
-      waitingId: placeholderId,
-      createdAt: placeholder.created_at
-    }
+    // DO NOT update pendingStreamMetaRef here - it should only be set by sendMessage
+    // and cleaned up when stream starts/completes
     return [...cleaned, placeholder]
   }, [generateClientId])
 
@@ -234,6 +254,32 @@ const ChatWindow = ({
     setConnectionNotice('')
   }, [])
 
+  const sendSubscribeRequest = useCallback((targetChatId) => {
+    if (!targetChatId || isSharedView) return
+    // Deduplicate rapid repeat subscribes for the same chat
+    if (lastSubscribeChatIdRef.current === targetChatId && wsRef.current?.readyState === WebSocket.OPEN) {
+      return
+    }
+    lastSubscribeChatIdRef.current = targetChatId
+
+    const payload = { type: 'subscribe', chat_id: targetChatId }
+    const socket = wsRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      // Queue it; it will be flushed on socket open
+      pendingOutgoingMessagesRef.current.push(payload)
+      return
+    }
+    try {
+      socket.send(JSON.stringify(payload))
+      if (isDev) {
+        console.log('[WS] Sent subscribe request for chat:', targetChatId)
+      }
+    } catch (err) {
+      console.error('[WS] Failed to send subscribe request:', err)
+      pendingOutgoingMessagesRef.current.push(payload)
+    }
+  }, [isSharedView])
+
   const handleSocketMessage = useCallback((data) => {
     const targetChatId = data.chat_id
     const currentChatId = activeChatRef.current
@@ -241,8 +287,12 @@ const ChatWindow = ({
     const isCurrentChat = !targetChatId || targetChatId === currentChatId
 
     if (!isCurrentChat) {
+      console.log(`[WS] Message for other chat ${targetChatId}, type: ${data.type}`)
       if ((data.type === 'message' && data.role === 'assistant') || data.type === 'message_complete' || data.type === 'error') {
+        console.log(`[WS] Notifying parent that chat ${targetChatId} stopped running`)
         resolvePendingStream(targetChatId)
+        // CRITICAL: Always notify parent directly, don't rely on pendingMeta
+        onChatPendingStateChange?.(targetChatId, false)
       }
       if (data.type === 'message' || data.type === 'message_complete') {
         onChatUpdateRef.current?.()
@@ -341,12 +391,76 @@ const ChatWindow = ({
       if (data.role === 'user') {
         onChatUpdateRef.current?.()
       }
+    } else if (data.type === 'subscription_confirmed') {
+      // Handle subscription confirmation for an existing stream
+      const streamId = data.stream_id
+      const streamChatId = data.chat_id
+      if (streamId) {
+        console.log('[WS subscription_confirmed] ✅ Stream:', streamId, 'chat:', streamChatId, 'Current messages:', messages.length)
+        // Set up stream tracking immediately
+        streamingMessageIdRef.current = streamId
+        activeStreamIdRef.current = streamId
+        setIsStreaming(true)
+        notifyStreamingStatus(true)  // Notify parent: chat is running
+        streamIdToMessageIdRef.current[streamId] = streamId
+        
+        // CRITICAL: Clean up pendingStreamMeta since stream is already running
+        if (streamChatId) {
+          delete pendingStreamMetaRef.current[streamChatId]
+          console.log('[WS subscription_confirmed] Cleaned up pendingStreamMeta for chat:', streamChatId)
+        }
+        // Initialize buffer if not exists
+        if (!streamBuffersRef.current[streamId]) {
+          streamBuffersRef.current[streamId] = { chunks: [], text: '' }
+        }
+        
+        // Ensure a message exists to receive chunks
+        setMessages(prev => {
+          // Check if we already have a message for this stream
+          const existingMsg = prev.find(m => m.id === streamId)
+          if (existingMsg) {
+            console.log('[WS subscription_confirmed] ✅ Message exists, marking as streaming. Content length:', existingMsg.content?.length || 0)
+            // Just mark it as streaming
+            return prev.map(m => m.id === streamId ? {
+              ...m,
+              isLoading: false,
+              isStreaming: true,
+              chatId: streamChatId || m.chatId || currentChatId
+            } : m)
+          }
+          
+          // Create a new message to receive the stream
+          console.log('[WS subscription_confirmed] ⚠️ Creating NEW empty message for stream (this should receive accumulated content soon)')
+          return [
+            ...prev,
+            {
+              id: streamId,
+              clientId: streamId,
+              role: 'assistant',
+              content: '',
+              created_at: new Date().toISOString(),
+              isLoading: false,
+              isStreaming: true,
+              isOptimistic: false,
+              chatId: streamChatId || currentChatId
+            }
+          ]
+        })
+      }
     } else if (data.type === 'message_start') {
       const streamId = data.stream_id || `stream-${Date.now()}`
+      const streamChatId = data.chat_id || currentChatId
       streamingMessageIdRef.current = streamId
       activeStreamIdRef.current = streamId
       setIsStreaming(true)
+      notifyStreamingStatus(true)  // Notify parent: chat is running
       streamBuffersRef.current[streamId] = { chunks: [], text: '' }
+      
+      // CRITICAL: Clean up pendingStreamMeta since stream is now starting
+      if (streamChatId) {
+        delete pendingStreamMetaRef.current[streamChatId]
+      }
+      
       if (isDev) {
         console.log('[WS message_start]', 'streamId:', streamId, 'pending queue:', pendingWaitingMessageIdsRef.current)
       }
@@ -415,11 +529,24 @@ const ChatWindow = ({
     } else if (data.type === 'message_chunk') {
       const chunkText = extractChunkText(data.content)
       const streamId = data.stream_id || streamingMessageIdRef.current
-      if (!chunkText || !streamId) return
-      if (isDev) {
-        console.log('[WS chunk]', chunkText, 'streamId:', streamId, 'map:', streamIdToMessageIdRef.current)
+      const chunkChatId = data.chat_id || currentChatId
+      if (!chunkText || !streamId) {
+        console.warn('[WS chunk] ⚠️ Missing chunkText or streamId!', {chunkText: !!chunkText, streamId})
+        return
       }
+      console.log('[WS chunk] 📦 Received', chunkText.length, 'chars for stream:', streamId, '(first 80 chars:', chunkText.substring(0, 80), '...)')
+      
+      // Ensure stream tracking is set up (in case message_start was missed)
+      if (!streamingMessageIdRef.current) {
+        streamingMessageIdRef.current = streamId
+      }
+      if (!activeStreamIdRef.current) {
+        activeStreamIdRef.current = streamId
+        setIsStreaming(true)
+      }
+      
       const chunkIndex = typeof data.chunk_index === 'number' ? data.chunk_index : null
+      // Use existing mapping or use streamId as the message ID
       const targetId = streamIdToMessageIdRef.current[streamId] || streamId
       streamIdToMessageIdRef.current[streamId] = targetId
 
@@ -435,31 +562,38 @@ const ChatWindow = ({
       streamBuffersRef.current[streamId] = buffer
       const mergedText = buffer.text || chunkText
 
+      // Extract canvas content BEFORE storing in state to prevent flashing
+      const { content: contentWithoutCanvas, canvasContent } = extractCanvasContent(mergedText)
+      
+      // Store the full content (with canvas) for canvas display to extract
+      // But use contentWithoutCanvas for display to avoid flashing
+      const contentToStore = mergedText  // Keep original for canvas extraction
+      const rawContent = contentWithoutCanvas || mergedText  // For display without canvas
+
       setMessages(prev => {
         let found = false
         const updated = prev.map(msg => {
           if (msg.id === targetId) {
             found = true
             if (isDev) {
-              console.log('[WS chunk] Updating message:', msg.id, 'old length:', msg.content?.length || 0, 'chunk length:', chunkText.length)
+              console.log('[WS chunk] Updating message:', msg.id, 'old length:', msg.content?.length || 0, 'new length:', contentToStore.length)
             }
             return {
               ...msg,
               role: 'assistant',
               isLoading: false,
               isStreaming: true,  // Mark as actively streaming
-              content: mergedText,
+              content: contentToStore,  // Full content with canvas for extraction
+              _displayContent: rawContent,  // Content without canvas for immediate display
               isOptimistic: false,
-              chatId: msg.chatId ?? currentChatId ?? null
+              chatId: msg.chatId ?? chunkChatId ?? currentChatId ?? null
             }
           }
           return msg
         })
 
         if (!found) {
-          if (isDev) {
-            console.log('[WS chunk] Creating new assistant message for stream:', streamId, 'targetId:', targetId)
-          }
+          console.log('[WS chunk] 🆕 Creating NEW message for stream:', streamId, 'with', contentToStore.length, 'chars. ChatId:', chunkChatId ?? currentChatId)
           return [
             ...prev,
             {
@@ -468,10 +602,11 @@ const ChatWindow = ({
               role: 'assistant',
               isLoading: false,
               isStreaming: true,  // Mark as actively streaming
-              content: mergedText,
+              content: contentToStore,  // Full content with canvas
+              _displayContent: rawContent,  // Content without canvas
               created_at: new Date().toISOString(),
               isOptimistic: false,
-              chatId: currentChatId ?? null
+              chatId: chunkChatId ?? currentChatId ?? null
             }
           ]
         }
@@ -484,9 +619,12 @@ const ChatWindow = ({
       const finalText = extractChunkText(data.content)
       const streamId = data.stream_id || streamingMessageIdRef.current
       const targetId = streamId ? (streamIdToMessageIdRef.current[streamId] || streamId) : null
-      if (isDev) {
-        console.log('[WS message_complete]', 'streamId:', streamId, 'target:', targetId, 'final length:', finalText.length)
-      }
+      console.log('[WS message_complete] ✅ Stream completed!', {
+        streamId, 
+        targetId, 
+        finalLength: finalText?.length || 0,
+        currentMessages: messages.length
+      })
       if (!targetId) {
         streamingMessageIdRef.current = null
         resolvePendingStream(currentChatId)
@@ -500,7 +638,13 @@ const ChatWindow = ({
           if (isDev) {
             console.log('[WS message_complete] Message with final ID already exists, skipping update')
           }
-          return prev
+          // Still clear all flags even if message exists
+          return prev.map(m => {
+            if (m.role === 'assistant' && (!m.chatId || m.chatId === resolvedChatId || m.chatId === currentChatId)) {
+              return { ...m, isLoading: false, isStreaming: false, isOptimistic: false }
+            }
+            return m
+          })
         }
         const updated = prev.map(msg => {
           if (msg.id === targetId) {
@@ -508,18 +652,30 @@ const ChatWindow = ({
             if (isDev) {
               console.log('[WS message_complete] Updating message ID from', targetId, 'to', data.id)
             }
-            return {
+            const updated = {
               ...msg,
               id: data.id,
               clientId: msg.clientId || `server-${data.id}`,
               role: data.role,
               isLoading: false,
-              isStreaming: false,  // Stop streaming indicator
+              isStreaming: false,
               created_at: data.created_at,
               content: finalText || msg.content || '',
+              _displayContent: undefined,  // Clear temp display content
               isOptimistic: false,
               chatId: resolvedChatId ?? msg.chatId ?? currentChatId ?? null
             }
+            console.log('[WS message_complete] ✅ Updated message flags:', {
+              id: updated.id,
+              isLoading: updated.isLoading,
+              isStreaming: updated.isStreaming,
+              contentLength: updated.content?.length
+            })
+            return updated
+          }
+          // CRITICAL: Clear flags on ALL assistant messages in this chat
+          if (msg.role === 'assistant' && (!msg.chatId || msg.chatId === resolvedChatId || msg.chatId === currentChatId)) {
+            return { ...msg, isLoading: false, isStreaming: false, isOptimistic: false }
           }
           return msg
         })
@@ -527,20 +683,31 @@ const ChatWindow = ({
           if (isDev) {
             console.log('[WS message_complete] Message not found, appending new one for stream:', streamId)
           }
+          // Clear flags on existing messages and append new one
+          const cleaned = prev.map(m => {
+            if (m.role === 'assistant' && (!m.chatId || m.chatId === resolvedChatId || m.chatId === currentChatId)) {
+              return { ...m, isLoading: false, isStreaming: false, isOptimistic: false }
+            }
+            return m
+          })
           return [
-            ...prev,
+            ...cleaned,
             {
               id: data.id,
               clientId: `server-${data.id}`,
               role: data.role,
               content: finalText,
               created_at: data.created_at,
-              chatId: resolvedChatId ?? currentChatId ?? null
+              chatId: resolvedChatId ?? currentChatId ?? null,
+              isLoading: false,
+              isStreaming: false,
+              isOptimistic: false
             }
           ]
         }
         return updated
       })
+      
       if (streamId) {
         delete streamIdToMessageIdRef.current[streamId]
         delete streamBuffersRef.current[streamId]
@@ -548,12 +715,30 @@ const ChatWindow = ({
       streamingMessageIdRef.current = null
       activeStreamIdRef.current = null
       setIsStreaming(false)
+      notifyStreamingStatus(false)  // Notify parent: chat is complete
       resolvePendingStream(resolvedChatId ?? currentChatId)
+      
+      // Flags are already cleared in the setMessages above (lines 636-637)
+      // Don't need a second setMessages call
+      
       onChatUpdateRef.current?.()
-      // Small delay to ensure message is saved to DB before fetching
+      // Short delay to ensure message is saved to DB before fetching
       setTimeout(() => {
         fetchMessagesRef.current({ showLoader: false })
-      }, 500)
+      }, 200)
+    } else if (data.type === 'no_active_stream') {
+      // No active stream for this chat - make sure we're not showing loading state
+      console.log('[WS no_active_stream] No active stream for chat, clearing any loading state')
+      setIsStreaming(false)
+      notifyStreamingStatus(false)
+      resolvePendingStream(currentChatId)
+      // Clear any loading flags on messages
+      setMessages(prev => prev.map(m => {
+        if (m.role === 'assistant' && (!m.chatId || m.chatId === currentChatId)) {
+          return { ...m, isLoading: false, isStreaming: false, isOptimistic: false }
+        }
+        return m
+      }))
     } else if (data.type === 'error') {
       console.error('Server error:', data.message)
       setConnectionNotice(data.message || 'An error occurred')
@@ -576,10 +761,20 @@ const ChatWindow = ({
       streamingMessageIdRef.current = null
       activeStreamIdRef.current = null
       setIsStreaming(false)
+      notifyStreamingStatus(false)  // Notify parent: chat stopped (error)
+      
+      // Only clear loading/streaming flags for assistant messages in this chat
+      setMessages(prev => prev.map(m => {
+        if (m.role === 'assistant' && (m.chatId === currentChatId || !m.chatId)) {
+          return { ...m, isLoading: false, isStreaming: false }
+        }
+        return m
+      }))
+      
       resolvePendingStream(currentChatId)
       pendingWaitingMessageIdsRef.current = []
     }
-  }, [resolvePendingStream])
+  }, [resolvePendingStream, notifyStreamingStatus])
 
   useEffect(() => {
     activeChatRef.current = chatId ?? null
@@ -588,7 +783,15 @@ const ChatWindow = ({
     streamBuffersRef.current = {}
     pendingWaitingMessageIdsRef.current = []
     streamingMessageIdRef.current = null
-    setMessages([])
+    activeStreamIdRef.current = null
+    setIsStreaming(false)  // Reset streaming state for new chat
+    // CRITICAL: Notify parent (sidebar) that this chat is not streaming
+    if (chatId) {
+      notifyStreamingStatus(false)
+    }
+    // Don't clear messages here - let fetchMessages replace them
+    // This prevents flash of empty content during fetch
+    // setMessages([])
 
     // For shared chats, we don't need userId
     if (!chatId || (!userId && !isSharedView)) {
@@ -646,38 +849,41 @@ const ChatWindow = ({
         }, [])
         uniqueMessages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
         setMessages((prev) => {
+          // If switching chats, only use messages for this chat
+          const prevForThisChat = prev.filter(m => m.chatId === chatId || !m.chatId)
+          
           const normalized = normalizeMessages(uniqueMessages.map((msg) => ({ ...msg, chatId })), chatId)
           
-          // Get all active stream IDs for this chat
-          const activeStreamIds = new Set(Object.keys(streamBuffersRef.current))
-          const activeStreamMessageIds = new Set(
-            Object.values(streamIdToMessageIdRef.current).filter(id => 
-              prev.some(m => m.id === id && m.chatId === chatId)
-            )
+          // CRITICAL: If we have more content locally than from the server, preserve local content
+          // This prevents losing content during the window between stream completion and DB save
+          const prevAssistantWithContent = prevForThisChat.filter(m => 
+            m.role === 'assistant' && m.content && m.content.trim().length > 0
+          )
+          const normalizedAssistantWithContent = normalized.filter(m => 
+            m.role === 'assistant' && m.content && m.content.trim().length > 0
           )
           
-          // Preserve placeholders AND actively streaming messages
-          const placeholders = prev.filter((msg) => {
-            const isTempId = typeof msg.id === 'string' && msg.id.startsWith('msg-')
-            const isPlaceholder = msg.chatId === chatId && (msg.isLoading || (isTempId && msg.isOptimistic))
-            const isActivelyStreaming = activeStreamMessageIds.has(msg.id)
-            return isPlaceholder || isActivelyStreaming
-          })
-
-          const filteredPlaceholders = placeholders.filter((placeholder) => {
-            // Don't filter out streaming messages even if they have a server ID
-            if (activeStreamMessageIds.has(placeholder.id)) {
-              return true
-            }
-            return !normalized.some(
-              (msg) =>
-                msg.id === placeholder.id ||
-                msg.clientId === placeholder.clientId
-            )
-          })
-
-          const combined = [...normalized, ...filteredPlaceholders]
-          return applyPendingPlaceholder(chatId, combined)
+          // If we had content locally but server returned less, keep local messages
+          if (prevAssistantWithContent.length > normalizedAssistantWithContent.length) {
+            console.log('[fetchMessages] ⚠️ Preserving local content - server has fewer messages than local state')
+            // Just clear loading flags on existing messages
+            return prev.filter(m => m.chatId === chatId || !m.chatId).map(m => ({
+              ...m,
+              isLoading: false,
+              isStreaming: false,
+              isOptimistic: false
+            }))
+          }
+          
+          // Clear any loading/streaming flags since we're getting fresh data from server
+          const cleanedNormalized = normalized.map(m => ({
+            ...m,
+            isLoading: false,
+            isStreaming: false,
+            isOptimistic: false
+          }))
+          
+          return cleanedNormalized
         })
 
         if (response.data.title === 'New Chat' && response.data.messages.length > 0) {
@@ -700,11 +906,14 @@ const ChatWindow = ({
 
     fetchMessagesRef.current = fetchMessages
     fetchMessages()
+    
+    // Subscribe to any active stream for this chat when chat changes
+    sendSubscribeRequest(chatId)
 
     return () => {
       isCurrent = false
     }
-  }, [chatId, userId, isSharedView, sharedChatData])
+  }, [chatId, userId, isSharedView, sharedChatData, sendSubscribeRequest])
 
   useEffect(() => {
     // For shared chats, we don't need WebSocket connection
@@ -776,6 +985,9 @@ const ChatWindow = ({
         setConnectionNotice('')
         flushPendingMessages()
         console.log('WebSocket connected successfully')
+        
+        // Always subscribe to the *current* chat (avoid stale chatId closure)
+        sendSubscribeRequest(activeChatRef.current)
       }
 
       socket.onmessage = (event) => {
@@ -837,7 +1049,7 @@ const ChatWindow = ({
         wsRef.current = null
       }
     }
-  }, [userId, flushPendingMessages, handleSocketMessage])
+  }, [userId, flushPendingMessages, handleSocketMessage, sendSubscribeRequest])
 
   useEffect(() => {
     if (!chatId || !userId) return
@@ -860,9 +1072,18 @@ const ChatWindow = ({
       return
     }
 
-    // Prevent duplicate sends - if already streaming, ignore this call
-    if (isStreaming) {
-      console.warn('Message already being sent, ignoring duplicate send')
+    // Prevent duplicate sends - check if THIS chat already has a pending response
+    const hasPendingResponse = messages.some(m => 
+      (m.isLoading || m.isStreaming) && m.role === 'assistant'
+    )
+    if (hasPendingResponse) {
+      const pendingMsg = messages.find(m => (m.isLoading || m.isStreaming) && m.role === 'assistant')
+      console.warn('Message already being sent in this chat, ignoring duplicate send. Pending message:', {
+        id: pendingMsg?.id,
+        isLoading: pendingMsg?.isLoading,
+        isStreaming: pendingMsg?.isStreaming,
+        contentLength: pendingMsg?.content?.length
+      })
       return
     }
 
@@ -883,6 +1104,7 @@ const ChatWindow = ({
 
     // Set streaming state IMMEDIATELY to prevent duplicate sends
     setIsStreaming(true)  // Show stop button immediately and prevent duplicate sends
+    notifyStreamingStatus(true)  // Notify parent: chat is now running
     
     const waitingId = generateClientId()
     streamingMessageIdRef.current = waitingId
@@ -959,6 +1181,7 @@ const ChatWindow = ({
       delete pendingStreamMetaRef.current[chatId]
       setMessages(prev => prev.filter(msg => msg.id !== tempId && msg.id !== waitingId))
       setIsStreaming(false)  // Reset streaming state on error
+      notifyStreamingStatus(false)  // Notify parent: chat stopped (send error)
       activeStreamIdRef.current = null
     }
   }

@@ -69,22 +69,31 @@ const MessageList = ({ messages, onScrollToBottom }) => {
             const hasAgentMarkup = message.role === 'assistant' && message.content && 
               (message.content.includes('<|think|>') || message.content.includes('<|tool|>'))
             
-            // For assistant messages, extract canvas content (displayed in canvas box, not chat)
-            const displayContent = message.role === 'assistant' && message.content
-              ? extractCanvasContent(message.content).content
+            // For assistant messages, use pre-processed display content if available (avoids flashing)
+            // Otherwise extract canvas content on the fly (for older messages from DB)
+            const displayContent = message.role === 'assistant' 
+              ? (message._displayContent || (message.content ? extractCanvasContent(message.content).content : ''))
               : message.content
+            
+            // Determine loading state: show skeleton only if no content yet
+            // Check _displayContent first (for streaming messages), fall back to content
+            const contentToCheck = message._displayContent || message.content
+            const hasContent = contentToCheck && contentToCheck.trim().length > 0
+            // Priority: if has content, never show skeleton, only inline loading
+            const showSkeleton = !hasContent && (message.isLoading || message.isStreaming)
+            const showInlineLoading = hasContent && (message.isLoading || message.isStreaming)
             
             return (
             <div key={message.clientId || message.id || index} className={`message ${message.role}`}>
               <div className="message-content">
-                {message.isLoading ? (
+                {showSkeleton ? (
                   <div className="typing-indicator">
                       <div className="skeleton-line"></div>
                       <div className="skeleton-line"></div>
                       <div className="skeleton-line"></div>
                     </div>
                   ) : hasAgentMarkup ? (
-                    <AgentContent content={message.content} showInlineLoading={message.isStreaming} />
+                    <AgentContent content={message.content} showInlineLoading={showInlineLoading} />
                   ) : (
                     <>
                       {message.role === 'user' ? (
@@ -152,7 +161,7 @@ const MessageList = ({ messages, onScrollToBottom }) => {
                           {displayContent}
                         </ReactMarkdown>
                       )}
-                      {message.isStreaming && (
+                      {showInlineLoading && (
                         <span className="inline-loading">
                     <span></span>
                     <span></span>

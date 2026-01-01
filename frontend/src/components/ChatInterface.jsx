@@ -42,6 +42,34 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
     }
   }, [])
 
+  // Check for active streams on mount and update pendingChats
+  useEffect(() => {
+    if (!canUseChat) return
+    
+    const checkActiveStreams = async () => {
+      try {
+        const response = await axios.get('/api/active_streams', {
+          params: { user_id: user.user_id }
+        })
+        const activeStreams = response.data.active_streams || []
+        
+        // Update pendingChats for all active streams
+        if (activeStreams.length > 0) {
+          const pendingMap = {}
+          activeStreams.forEach(stream => {
+            pendingMap[stream.chat_id] = true
+          })
+          setPendingChats(pendingMap)
+          console.log('[ChatInterface] Found active streams:', activeStreams)
+        }
+      } catch (err) {
+        console.error('Failed to check active streams:', err)
+      }
+    }
+    
+    checkActiveStreams()
+  }, [canUseChat, user?.user_id])
+
   useEffect(() => {
     // Don't load normal chats if viewing a shared chat
     if (shareToken) {
