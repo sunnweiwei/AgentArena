@@ -370,6 +370,37 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
         yield '<|tool|>' + observation + '<|/tool|>'
         if observation == 'finish':
             yield f"<|highlight|>**Answer:** {predicted_answer}\n\n**Confidence:** {confidence}\n\n**Explanation:** {explanation}<|/highlight|>"
+            
+            # Emit survey after research completion
+            import json
+            survey = {
+                "questions": [
+                    {
+                        "id": "research_quality",
+                        "type": "likert",
+                        "question": "How would you rate the quality of the research?",
+                        "scale": 5
+                    },
+                    {
+                        "id": "answer_confidence",
+                        "type": "likert",
+                        "question": "How confident are you in the provided answer?",
+                        "scale": 5
+                    },
+                    {
+                        "id": "research_depth",
+                        "type": "select",
+                        "question": "Was the research depth appropriate?",
+                        "options": ["Too shallow", "Just right", "Too deep"]
+                    },
+                    {
+                        "id": "feedback",
+                        "type": "text",
+                        "question": "Any additional feedback or comments?"
+                    }
+                ]
+            }
+            yield f"<|survey|>{json.dumps(survey)}<|/survey|>"
             break
     return
 

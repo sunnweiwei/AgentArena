@@ -287,6 +287,10 @@ class SWEEnv(BaseEnv):
             # Problem statement is GitHub issue markdown
             # Reduce header levels to make it less overwhelming (convert # to ###, ## to ####)
             problem_cleaned = problem_statement.strip()
+            # Remove setext-style heading markers (lines of === or ---)
+            import re
+            problem_cleaned = re.sub(r'\n={3,}\n', '\n\n', problem_cleaned)
+            problem_cleaned = re.sub(r'\n-{3,}\n', '\n\n', problem_cleaned)
             # Replace headers to reduce visual noise
             problem_cleaned = problem_cleaned.replace('\n# ', '\n### ')
             problem_cleaned = problem_cleaned.replace('\n## ', '\n#### ')

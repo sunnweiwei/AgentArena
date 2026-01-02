@@ -65,6 +65,7 @@ class Message(Base):
     role = Column(String)  # "user" or "assistant"
     content = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
+    survey_response = Column(Text, nullable=True)  # JSON string of survey responses
     chat = relationship("Chat", back_populates="messages")
 
 class MCPServer(Base):
@@ -490,7 +491,8 @@ async def get_chat(chat_id: str, user_id: int, db: Session = Depends(get_db)):
                 "id": msg.id,
                 "role": msg.role,
                 "content": msg.content,
-                "created_at": msg.created_at.isoformat()
+                "created_at": msg.created_at.isoformat(),
+                "survey_response": msg.survey_response
             }
             for msg in chat.messages
         ]
@@ -556,7 +558,8 @@ async def get_shared_chat(share_token: str, db: Session = Depends(get_db)):
                 "id": msg.id,
                 "role": msg.role,
                 "content": msg.content,
-                "created_at": msg.created_at.isoformat()
+                "created_at": msg.created_at.isoformat(),
+                "survey_response": msg.survey_response
             }
             for msg in chat.messages
         ]
@@ -744,6 +747,64 @@ async def get_survey(chat_id: str, user_id: int, db: Session = Depends(get_db)):
             "feedback_text": survey.feedback_text,
             "specific_examples": survey.specific_examples,
             "created_at": survey.created_at.isoformat()
+        }
+    }
+
+class InlineSurveySubmission(BaseModel):
+    message_id: int
+    chat_id: str
+    responses: dict
+    user_id: int
+
+@app.post("/api/surveys/inline/submit")
+async def submit_inline_survey(
+    submission: InlineSurveySubmission,
+    db: Session = Depends(get_db)
+):
+    """Submit inline survey responses and return confirmation with share link"""
+    import json
+    import secrets
+    
+    # Validate chat belongs to user
+    chat = db.query(Chat).filter(Chat.id == submission.chat_id, Chat.user_id == submission.user_id).first()
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    
+    # Find the message with survey
+    message = db.query(Message).filter(Message.id == submission.message_id, Message.chat_id == submission.chat_id).first()
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    
+    # Save survey responses to message (overwrites previous if resubmitted)
+    message.survey_response = json.dumps(submission.responses)
+    
+    # Generate share token if not exists
+    if not chat.share_token:
+        chat.share_token = secrets.token_urlsafe(16)
+    
+    # Create share link message with highlight formatting
+    share_url = f"/chat?share={chat.share_token}"
+    full_share_url = f"http://sf.lti.cs.cmu.edu:3000{share_url}"
+    share_message = Message(
+        chat_id=submission.chat_id,
+        role='assistant',
+        content=f"<|highlight|>✅ Survey submitted!\n\nShare this chat: {full_share_url}<|/highlight|>"
+    )
+    db.add(share_message)
+    
+    chat.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(share_message)
+    
+    return {
+        "success": True,
+        "share_url": share_url,
+        "message": "Survey submitted successfully!",
+        "share_message": {
+            "id": share_message.id,
+            "role": share_message.role,
+            "content": share_message.content,
+            "created_at": share_message.created_at.isoformat()
         }
     }
 

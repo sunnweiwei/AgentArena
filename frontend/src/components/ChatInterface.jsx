@@ -11,22 +11,20 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
   const [chats, setChats] = useState([])
   const [currentChatId, setCurrentChatId] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [sidebarOpen, setSidebarOpen] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return window.innerWidth > 768
-    }
-    return true
-  }) // Desktop open by default, mobile closed
+  const [sidebarOpen, setSidebarOpen] = useState(false) // Closed by default
   const [pendingChats, setPendingChats] = useState({})
   const [sharedChat, setSharedChat] = useState(null) // Shared chat data when viewing via share link
   const [shareToken, setShareToken] = useState(null) // Share token from URL
-  const [surveyRequestCallback, setSurveyRequestCallback] = useState(null)
+  const [initialMessage, setInitialMessage] = useState(null) // Message to send automatically from URL
+  const [isCreatingQueryChat, setIsCreatingQueryChat] = useState(false) // Flag to prevent normal chat loading when creating query chat
   const canUseChat = Boolean(user && user.user_id)
 
-  // Check for share token in URL
+  // Check for share token or query parameter in URL
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search)
     const share = urlParams.get('share')
+    const query = urlParams.get('query')
+    
     if (share) {
       setShareToken(share)
       // Load shared chat
@@ -40,8 +38,43 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
           console.error('Failed to load shared chat:', error)
           setLoading(false)
         })
+    } else if (query && canUseChat) {
+      console.log('[ChatInterface] Query parameter detected, creating new chat:', query)
+      
+      // Set flag to prevent normal chat loading
+      setIsCreatingQueryChat(true)
+      
+      // Create a new chat and send the query message
+      const decodedQuery = decodeURIComponent(query)
+      
+      // Create new chat first
+      axios.post('/api/chats', null, {
+        params: { user_id: user.user_id }
+      })
+        .then(response => {
+          const newChat = response.data
+          console.log('[ChatInterface] New chat created for query:', newChat.id)
+          setCurrentChatId(newChat.id)
+          localStorage.setItem('lastChatId', newChat.id)
+          // Set initial message after chat is created
+          setInitialMessage(decodedQuery)
+          // Clear the query param from URL AFTER everything is set up
+          const newUrl = window.location.pathname
+          window.history.replaceState({}, '', newUrl)
+          // Clear flag and loading state after everything is set up
+          setIsCreatingQueryChat(false)
+          setLoading(false)
+        })
+        .catch(err => {
+          console.error('Failed to create chat for query:', err)
+          // Clear URL even on error
+          const newUrl = window.location.pathname
+          window.history.replaceState({}, '', newUrl)
+          setIsCreatingQueryChat(false)
+          setLoading(false)
+        })
     }
-  }, [])
+  }, [canUseChat, user?.user_id])
 
   // Check for active streams on mount and update pendingChats
   useEffect(() => {
@@ -74,6 +107,18 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
   useEffect(() => {
     // Don't load normal chats if viewing a shared chat
     if (shareToken) {
+      return
+    }
+    
+    // Don't load normal chats if there's a query parameter (check URL directly, not state)
+    const urlParams = new URLSearchParams(window.location.search)
+    if (urlParams.get('query')) {
+      console.log('[ChatInterface] Query parameter detected, skipping normal chat loading')
+      return
+    }
+    
+    // Don't load normal chats if we're creating a query chat
+    if (isCreatingQueryChat) {
       return
     }
     
@@ -151,34 +196,7 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
     }
   }
 
-  // Helper function to check if survey is needed
-  const checkIfSurveyNeeded = async (chatId) => {
-    try {
-      const response = await axios.get(`/api/surveys/${chatId}`, {
-        params: { user_id: user.user_id }
-      })
-      return !response.data.exists
-    } catch (err) {
-      console.error('Failed to check survey:', err)
-      return false
-    }
-  }
-
   const createNewChat = async () => {
-    const surveyMode = import.meta.env.VITE_SURVEY_MODE || 'optional'
-
-    // In mandatory mode, check if current chat needs survey before creating new chat
-    if (surveyMode === 'mandatory' && currentChatId) {
-      const needsSurvey = await checkIfSurveyNeeded(currentChatId)
-      if (needsSurvey) {
-        // Trigger survey display via callback to ChatWindow
-        if (surveyRequestCallback) {
-          surveyRequestCallback(currentChatId)
-        }
-        return null // Block new chat creation until survey is submitted
-      }
-    }
-
     // If current chat exists and has no messages, reuse it instead of creating new one
     if (currentChatId) {
       try {
@@ -196,13 +214,6 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
       } catch (err) {
         console.error('Failed to check current chat:', err)
         // Continue to create new chat if check fails
-      }
-    }
-
-    // In optional mode, trigger survey check without blocking
-    if (surveyMode === 'optional' && currentChatId) {
-      if (surveyRequestCallback) {
-        surveyRequestCallback(currentChatId)
       }
     }
 
@@ -345,7 +356,8 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
         onChatPendingStateChange={handleChatPendingStateChange}
-        onSurveyRequested={setSurveyRequestCallback}
+        initialMessage={initialMessage}
+        onInitialMessageSent={() => setInitialMessage(null)}
       />
     </div>
   )

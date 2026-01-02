@@ -2,6 +2,7 @@ import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
+import { SurveyBlock } from './SurveyBlock'
 import './AgentBlock.css'
 
 /**
@@ -198,8 +199,8 @@ export function parseAgentMarkup(content) {
   const parts = []
   let position = 0
 
-  // First pass: find <|think|>, <|tool|>, and <|highlight|> blocks
-  const blockRegex = /<\|(think|tool|highlight)\|>(.*?)<\|\/\1\|>/gs
+  // First pass: find <|think|>, <|tool|>, <|highlight|>, <|survey|>, and <|survey-response|> blocks
+  const blockRegex = /<\|(think|tool|highlight|survey|survey-response)\|>(.*?)<\|\/\1\|>/gs
   const matches = [...content.matchAll(blockRegex)]
 
   for (const match of matches) {
@@ -225,6 +226,12 @@ export function parseAgentMarkup(content) {
     } else if (match[1] === 'highlight') {
       // Highlight block - keep as is, no function call parsing
       parts.push({ type: 'highlight', content: match[2] })
+    } else if (match[1] === 'survey') {
+      // Survey block - keep as is
+      parts.push({ type: 'survey', content: match[2] })
+    } else if (match[1] === 'survey-response') {
+      // Survey response block - submitted values
+      parts.push({ type: 'survey-response', content: match[2] })
     }
 
     position = endIndex
@@ -399,7 +406,7 @@ export function HighlightBlock({ content }) {
 /**
  * Main component to render parsed agent content
  */
-export function AgentContent({ content, showInlineLoading = false }) {
+export function AgentContent({ content, showInlineLoading = false, onSurveySubmit, messageId, surveySubmitted = false, surveyValues = null }) {
   const parts = parseAgentMarkup(content)
   
   return (
@@ -505,6 +512,40 @@ export function AgentContent({ content, showInlineLoading = false }) {
               )}
             </React.Fragment>
           )
+        } else if (part.type === 'survey') {
+          return (
+            <SurveyBlock
+              key={index}
+              content={part.content}
+              onSubmit={(responses) => onSurveySubmit?.(messageId, responses)}
+              isSubmitted={surveySubmitted}
+              submittedValues={surveyValues}
+              messageId={messageId}
+            />
+          )
+        } else if (part.type === 'survey-response') {
+          // Parse survey response and display the values
+          try {
+            const responseData = JSON.parse(part.content)
+            return (
+              <div key={index} className="survey-response-block">
+                <div className="survey-response-header">✅ Survey Submitted</div>
+                <div className="survey-response-values">
+                  {Object.entries(responseData.values).map(([key, value]) => (
+                    <div key={key} className="response-item">
+                      <span className="response-label">{key}:</span>
+                      <span className="response-value">
+                        {Array.isArray(value) ? value.join(', ') : String(value)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          } catch (e) {
+            console.error('Failed to parse survey response:', e)
+            return null
+          }
         }
         return null
       })}

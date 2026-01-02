@@ -1,14 +1,44 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
 import { AgentContent, extractCanvasContent, DiffBlock } from './AgentBlock'
 import './MessageList.css'
 
-const MessageList = ({ messages, onScrollToBottom }) => {
+const MessageList = ({ messages, onScrollToBottom, onSurveySubmit }) => {
   const listRef = useRef(null)
   const prevSignatureRef = useRef({ id: null, length: 0 })
   const isFirstRenderRef = useRef(true)
+
+  // Cache parsed survey values to maintain stable object references
+  // This prevents SurveyBlock from re-rendering when other surveys are submitted
+  const surveyValuesCacheRef = useRef(new Map())
+
+  const getParsedSurveyValues = (messageId, surveyResponse) => {
+    if (!surveyResponse) return null
+
+    const cache = surveyValuesCacheRef.current
+
+    // Create a stable cache key (handle both string and object)
+    const responseString = typeof surveyResponse === 'string'
+      ? surveyResponse
+      : JSON.stringify(surveyResponse)
+    const cacheKey = `${messageId}-${responseString}`
+
+    if (cache.has(cacheKey)) {
+      return cache.get(cacheKey)
+    }
+    try {
+      const parsed = typeof surveyResponse === 'string'
+        ? JSON.parse(surveyResponse)
+        : surveyResponse
+      cache.set(cacheKey, parsed)
+      return parsed
+    } catch (e) {
+      console.error('Failed to parse survey_response:', e, surveyResponse)
+      return null
+    }
+  }
 
   const scrollToBottom = (behavior = 'smooth') => {
     const listEl = listRef.current
@@ -65,16 +95,16 @@ const MessageList = ({ messages, onScrollToBottom }) => {
       ) : (
         <>
           {messages.map((message, index) => {
-            // Check if message contains agent markup (think/tool tags) - only for assistant messages
-            const hasAgentMarkup = message.role === 'assistant' && message.content && 
-              (message.content.includes('<|think|>') || message.content.includes('<|tool|>'))
-            
+            // Check if message contains agent markup (think/tool/highlight/survey tags) - only for assistant messages
+            const hasAgentMarkup = message.role === 'assistant' && message.content &&
+              (message.content.includes('<|think|>') || message.content.includes('<|tool|>') || message.content.includes('<|highlight|>') || message.content.includes('<|survey|>') || message.content.includes('<|survey-response|>'))
+
             // For assistant messages, use pre-processed display content if available (avoids flashing)
             // Otherwise extract canvas content on the fly (for older messages from DB)
-            const displayContent = message.role === 'assistant' 
+            const displayContent = message.role === 'assistant'
               ? (message._displayContent || (message.content ? extractCanvasContent(message.content).content : ''))
               : message.content
-            
+
             // Determine loading state: show skeleton only if no content yet
             // Check _displayContent first (for streaming messages), fall back to content
             const contentToCheck = message._displayContent || message.content
@@ -82,7 +112,10 @@ const MessageList = ({ messages, onScrollToBottom }) => {
             // Priority: if has content, never show skeleton, only inline loading
             const showSkeleton = !hasContent && (message.isLoading || message.isStreaming)
             const showInlineLoading = hasContent && (message.isLoading || message.isStreaming)
-            
+
+            // Get cached parsed survey values (maintains stable object references)
+            const surveyValues = getParsedSurveyValues(message.id, message.survey_response)
+
             return (
             <div key={message.clientId || message.id || index} className={`message ${message.role}`}>
               <div className="message-content">
@@ -93,7 +126,14 @@ const MessageList = ({ messages, onScrollToBottom }) => {
                       <div className="skeleton-line"></div>
                     </div>
                   ) : hasAgentMarkup ? (
-                    <AgentContent content={message.content} showInlineLoading={showInlineLoading} />
+                    <AgentContent
+                      content={message.content}
+                      showInlineLoading={showInlineLoading}
+                      onSurveySubmit={onSurveySubmit}
+                      messageId={message.id}
+                      surveySubmitted={!!message.survey_response}
+                      surveyValues={surveyValues}
+                    />
                   ) : (
                     <>
                       {message.role === 'user' ? (

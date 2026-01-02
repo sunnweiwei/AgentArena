@@ -6,6 +6,7 @@ from openai import OpenAI
 
 RUNTIME_SERVICE_URL = os.getenv("RUNTIME_SERVICE_URL", "http://sf.lti.cs.cmu.edu:8005")
 
+
 def call_openai():
     # Load API keys
     OPENAI_API_KEY = None
@@ -58,7 +59,32 @@ def extract_fn_call(text):
         fn_start = re.search(r'(?m)^[ \t]*<function=([^>]+)>', text)
         if fn_start:
             fn_name = fn_start.group(1)
-            
+
+            # Check for wrong closing tag format: </function=...> instead of </function>
+            wrong_close_function = re.search(r'</function=', text)
+            if wrong_close_function:
+                return {
+                    'error': f"""**Tool Call Format Error**
+
+You used `</function=` as a closing tag, but closing tags should NOT have `=` in them.
+
+**Your format (WRONG):**
+```
+<function={fn_name}>
+...
+</function={fn_name}>
+```
+
+**Correct format:**
+```
+<function={fn_name}>
+...
+</function>
+```
+
+The closing tag should simply be `</function>` without any `=` or name."""
+                }
+
             # First check for wrong format: <parameter>value</parameter> instead of <parameter=name>value</parameter>
             wrong_param_format = re.findall(r'<parameter>([^<]*)</parameter>', text)
             if wrong_param_format:
@@ -83,7 +109,7 @@ You used `<parameter>` without specifying the parameter name. The parameter name
 
 Please use `<parameter=PARAM_NAME>value</parameter>` format. The parameter name (e.g., `message`, `command`, `path`) must be specified in the opening tag like `<parameter=message>`."""
                 }
-            
+
             open_params = len(re.findall(r'<parameter=[^>]+>', text))
             close_params = len(re.findall(r'</parameter>', text))
             has_close_function = bool(re.search(r'</function>', text))
@@ -112,12 +138,12 @@ It looks like you started a tool call but didn't close one or more tags (e.g., m
 Please make sure every `<parameter=...>` has a matching `</parameter>`, and every `<function=...>` has a closing `</function>`."""
                 }
         return None
-    
+
     # Check for wrong parameter format and incomplete parameters within matched function calls
     for m in matches:
         fn_body = m.group(2)
         fn_name = m.group(1)
-        
+
         # First check for wrong format: <parameter>value</parameter> instead of <parameter=name>value</parameter>
         wrong_param_format = re.findall(r'<parameter>([^<]*)</parameter>', fn_body)
         if wrong_param_format:
@@ -143,7 +169,7 @@ You used `<parameter>` without specifying the parameter name. The parameter name
 
 Please use `<parameter=PARAM_NAME>value</parameter>` format. The parameter name (e.g., `message`, `command`, `path`) must be specified in the opening tag like `<parameter=message>`."""
             }
-        
+
         # Check for incomplete parameters
         open_params = len(re.findall(r'<parameter=[^>]+>', fn_body))
         close_params = len(re.findall(r'</parameter>', fn_body))
@@ -176,19 +202,19 @@ Please make sure every `<parameter=...>` has a matching `</parameter>`."""
         line_gap = text.count('\n', prev.end(), m.start())
         groups[-1].append(m) if line_gap < 4 else groups.append([m])
     last = groups[-1]
-    
+
     results = []
     for m in last:
         fn_body = m.group(2)
         fn_name = m.group(1)
-        
+
         # Extract standard format parameters: <parameter=name>value</parameter>
         standard_params = dict(re.findall(
             r'<parameter=([^>]+)>(.*?)</parameter>',
             fn_body,
             re.DOTALL
         ))
-        
+
         # Extract XML-style parameters: <name>value</name> (but exclude 'parameter' and 'function' tags)
         xml_params = re.findall(r'<([a-z_][a-z0-9_]*)>(.*?)</\1>', fn_body, re.DOTALL | re.IGNORECASE)
         xml_params_dict = {}
@@ -196,15 +222,15 @@ Please make sure every `<parameter=...>` has a matching `</parameter>`."""
             # Skip 'parameter' and 'function' tags (these are structural, not parameters)
             if param_name.lower() not in ['parameter', 'function']:
                 xml_params_dict[param_name] = param_value.strip()
-        
+
         # Merge: standard params take precedence, then XML params
         merged_params = {**xml_params_dict, **standard_params}
-        
+
         results.append({
             'name': fn_name,
             'arguments': merged_params
         })
-    
+
     return results
 
 
@@ -227,13 +253,13 @@ def fn_call_to_text(fn_call) -> str:
 
     if not isinstance(fn_call, dict) or 'name' not in fn_call:
         raise ValueError("fn_call must be a dict with 'name' key or a list of such dicts")
-    
+
     fn_name = fn_call['name']
     arguments = fn_call.get('arguments', {}) or {}
-    
+
     # Build the function call text
     lines = [f"<function={fn_name}>"]
-    
+
     # Add parameters
     for key, value in arguments.items():
         # Convert value to string, handle None
@@ -242,9 +268,9 @@ def fn_call_to_text(fn_call) -> str:
         else:
             value_str = str(value)
         lines.append(f"<parameter={key}>{value_str}</parameter>")
-    
+
     lines.append("</function>")
-    
+
     return "\n".join(lines)
 
 
@@ -418,7 +444,7 @@ class BaseEnv:
 import re
 from typing import List, Dict
 
-_TAG_RE = re.compile(r"<\|(think|tool|canvas|highlight)\|>(.*?)<\|/\1\|>", re.DOTALL)
+_TAG_RE = re.compile(r"<\|(think|tool|canvas|highlight|survey)\|>(.*?)<\|/\1\|>", re.DOTALL)
 
 
 def split_agent_markup(s: str) -> List[Dict[str, str]]:
@@ -446,6 +472,7 @@ def split_agent_markup(s: str) -> List[Dict[str, str]]:
             merged.append(chunk)
     return merged
 
+
 def keep_first_n_words(text: str, n: int = 1000) -> str:
     if not text:
         return ""
@@ -455,6 +482,7 @@ def keep_first_n_words(text: str, n: int = 1000) -> str:
         if count == n:
             return text[:m.end()] + '\n[Document is truncated.]'
     return text
+
 
 def condense_history(conversation):
     new_conversation = []
@@ -474,4 +502,199 @@ def condense_history(conversation):
                     new_conversation.append({'role': 'user', 'content': sub_turn['content']})
         else:
             new_conversation.append(turn)
+    return new_conversation
+
+
+def clean_markdown(text):
+    import re
+    text = text.strip()
+    # Remove setext-style heading markers (lines of === or ---)
+    text = re.sub(r'\n={3,}\n', '\n\n', text)
+    text = re.sub(r'\n-{3,}\n', '\n\n', text)
+    # Reduce header levels (add 2 levels) for atx-style headers
+    text = text.replace('\n# ', '\n### ')
+    text = text.replace('\n## ', '\n#### ')
+    text = text.replace('\n### ', '\n##### ')
+    parts = re.split(r'(```[\s\S]*?```)', text)
+    result = []
+    for i, part in enumerate(parts):
+        if part.startswith('```'):
+            result.append(part)
+        else:
+            processed = re.sub(r'(?<!\n)\n(?!\n)', '  \n', part)
+            result.append(processed)
+    return text
+
+
+# Cache tokenizer at module level
+_swe_tokenizer = None
+
+
+def _get_swe_tokenizer():
+    global _swe_tokenizer
+    if _swe_tokenizer is None:
+        try:
+            from transformers import AutoTokenizer
+            _swe_tokenizer = AutoTokenizer.from_pretrained("ByteDance-Seed/Seed-OSS-36B-Instruct")
+        except Exception:
+            _swe_tokenizer = False  # Mark as failed
+    return _swe_tokenizer if _swe_tokenizer else None
+
+
+TOKENIZER = None
+
+
+def swe_context_condenser(conversation, target=10000):
+    """
+    Condense conversation to be below target token count.
+    Uses actual tokenizer and progressive truncation (can empty early messages).
+    """
+    global TOKENIZER
+    if TOKENIZER is None:
+        TOKENIZER = _get_swe_tokenizer()
+    tokenizer = TOKENIZER
+
+    def count_tokens(text):
+        if tokenizer:
+            return len(tokenizer.encode(text))
+        else:
+            import re
+            return len(re.findall(r'\S+', text))
+
+    def total_token_count(conv):
+        return sum(count_tokens(turn.get('content', '')) for turn in conv)
+
+    def truncate_to_tokens(text, max_tokens):
+        if not text or max_tokens == 0:
+            return ''
+        if tokenizer:
+            tokens = tokenizer.encode(text)
+            if len(tokens) <= max_tokens:
+                return text
+            return tokenizer.decode(tokens[:max_tokens])
+        else:
+            return keep_first_n_words(text, max_tokens)
+
+    # Identify messages to keep intact
+    system_idx = None
+    user_message_indices = []
+
+    for i, turn in enumerate(conversation):
+        if turn['role'] == 'system' and system_idx is None:
+            system_idx = i
+        elif turn['role'] == 'user':
+            user_message_indices.append(i)
+
+    keep_intact = set()
+    if system_idx is not None:
+        keep_intact.add(system_idx)
+    for idx in user_message_indices[:2]:
+        keep_intact.add(idx)
+
+    # Check if already below target
+    if total_token_count(conversation) <= target:
+        return conversation
+
+    # Get truncatable indices
+    truncatable_indices = [i for i in range(len(conversation)) if i not in keep_intact]
+
+    if not truncatable_indices:
+        return conversation
+
+    # Try progressively more aggressive truncation (including 0 to empty messages)
+    max_limits = [2048, 1024, 768, 512, 384, 256, 128, 64]
+
+    for max_limit in max_limits:
+        new_conversation = []
+
+        for i, turn in enumerate(conversation):
+            if i in keep_intact:
+                new_conversation.append(turn)
+            else:
+                position = truncatable_indices.index(i)
+                recency = position / max(1, len(truncatable_indices) - 1) if len(truncatable_indices) > 1 else 1
+
+                # Progressive limits - older messages get more aggressive cuts
+                if recency < 0.33:
+                    limit = max_limit // 4 if max_limit > 0 else 0
+                elif recency < 0.67:
+                    limit = max_limit // 2 if max_limit > 0 else 0
+                else:
+                    limit = max_limit
+
+                new_content = truncate_to_tokens(turn['content'], limit)
+                new_conversation.append({'role': turn['role'], 'content': new_content})
+
+        if total_token_count(new_conversation) <= target:
+            return new_conversation
+
+    return new_conversation
+
+
+SUMMARY_PROMPT = """The current context is full. Your task will be delegate to another agent. Now summarize all your progress, current status, and what need to do next. Make sure the summary is clear and concise. You summary should track:
+
+USER_CONTEXT: (Preserve essential user requirements, goals, and clarifications in concise form)
+
+COMPLETED: (Tasks completed so far, with brief results)
+PENDING: (Tasks that still need to be done)
+CURRENT_STATE: (Current variables, data structures, or relevant state)
+
+For code-specific tasks, also include:
+CODE_STATE: {File paths, function signatures, data structures}
+TESTS: {Failing cases, error messages, outputs}
+CHANGES: {Code edits, variable updates}
+DEPS: {Dependencies, imports, external calls}
+
+PRIORITIZE:
+1. Adapt tracking format to match the actual task type
+2. Capture key user requirements and goals
+3. Distinguish between completed and pending tasks
+4. Keep all sections concise and relevant
+
+SKIP: Tracking irrelevant details for the current task type
+
+Example formats:
+
+For code tasks:
+USER_CONTEXT: Fix FITS card float representation issue
+COMPLETED: Modified mod_float() in card.py, all tests passing
+PENDING: Create PR, update documentation
+CODE_STATE: mod_float() in card.py updated
+TESTS: test_format() passed
+CHANGES: str(val) replaces f"{val:.16G}"
+DEPS: None modified
+<summary>
+</summary>
+"""
+
+
+def swe_context_summarize(conversation, openai_client):
+    def extract_summary(text: str) -> str:
+        matches = re.findall(r'<summary>(.*?)</summary>', text, re.DOTALL)
+        return matches[-1].strip() if matches else None
+
+    last_turns = (f"{conversation[-2]['role']}: {keep_first_n_words(conversation[-2]['content'], 256)}\n\n"
+                  f"{conversation[-1]['role']}: {keep_first_n_words(conversation[-1]['content'], 256)}\n\n")
+    conversation = conversation + [{'role': 'user', 'content': SUMMARY_PROMPT}]
+
+    response = openai_client.responses.create(
+        model='gpt-5-mini',
+        input=conversation,
+    )
+    answer = ""
+    for item in response.output:
+        if item.type == 'message':
+            answer += '\n\n' if len(answer) > 0 else ''
+            answer += item.content[0].text
+    summary = extract_summary(answer)
+    if summary:
+        summary = answer
+    new_conversation = conversation[:3]
+
+    if new_conversation[-1]['role'] == 'user':
+        new_conversation.append({'role': 'assistant', 'content': str(response)})
+    new_conversation += [
+        {'role': 'user',
+         'content': f"For this question, AI have already made the following progress in previous session, summarized as follow:\n\n{summary}\n\n"
+                    f"Most recent turn:\n\n{last_turns}\n\nNow continue work on it."}]
     return new_conversation

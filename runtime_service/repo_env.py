@@ -12,7 +12,7 @@ from unidiff import PatchedFile, PatchSet
 from unidiff.errors import UnidiffParseError
 import numpy as np
 import requests
-import torch
+# import torch
 
 
 ENV_PREFIX_MAP = {}
@@ -107,7 +107,7 @@ class GymEnv:
 
     async def update_dataproto(self, out, item, messages, score, reward_dict, tag='main', metrics=None):
         final_score = score[1]
-        out.batch['swalm_agent_score'] = torch.Tensor([final_score]).to(torch.float32)
+        # out.batch['swalm_agent_score'] = torch.Tensor([final_score]).to(torch.float32)
         out.meta_info["xperf_metrics"] = metrics
         out.meta_info["generation_kwargs"] = item.meta_info['generation_kwargs']
         out.non_tensor_batch = copy.deepcopy(item.non_tensor_batch)

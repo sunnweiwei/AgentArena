@@ -398,4 +398,48 @@
   background: rgba(56, 139, 253, 0.08);
 }
 
+/* Survey Response Block */
+.survey-response-block {
+  background: var(--bg-secondary);
+  border: 1px solid var(--success-color);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 12px 0;
+  max-width: 500px;
+}
+
+.survey-response-header {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--success-color);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.survey-response-values {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.response-item {
+  display: flex;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.response-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+  min-width: 150px;
+}
+
+.response-value {
+  color: var(--text-primary);
+  flex: 1;
+}
+
 

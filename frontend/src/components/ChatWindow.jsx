@@ -4,7 +4,6 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import MessageList from './MessageList'
 import MessageInput from './MessageInput'
-import SurveyModal from './SurveyModal'
 import { getLastCanvasContent, DiffBlock, extractCanvasContent } from './AgentBlock'
 import './ChatWindow.css'
 
@@ -99,9 +98,10 @@ const ChatWindow = ({
   sidebarOpen,
   onToggleSidebar,
   onChatPendingStateChange,
-  onSurveyRequested,
   sharedChatData = null,
-  isSharedView = false
+  isSharedView = false,
+  initialMessage = null,
+  onInitialMessageSent = null
 }) => {
   // Notify parent about streaming status changes
   const notifyStreamingStatus = useCallback((isStreaming) => {
@@ -117,17 +117,12 @@ const ChatWindow = ({
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false)
   const [metaInfo, setMetaInfo] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
-  const [canvasOpen, setCanvasOpen] = useState(false)
+  const [canvasOpen, setCanvasOpen] = useState(true)
   const [shareUrl, setShareUrl] = useState(null)
   const [shareCopied, setShareCopied] = useState(false)
   const [showShareNotification, setShowShareNotification] = useState(false)
   const [splitRatio, setSplitRatio] = useState(50) // Percentage for left panel
   const [isDragging, setIsDragging] = useState(false)
-
-  // Survey state
-  const [showSurvey, setShowSurvey] = useState(false)
-  const [surveyForChatId, setSurveyForChatId] = useState(null)
-  const [chatMetaInfo, setChatMetaInfo] = useState('')
 
   const activeStreamIdRef = useRef(null)
 
@@ -148,6 +143,7 @@ const ChatWindow = ({
   const pendingStreamMetaRef = useRef({})
   const lastSubscribeChatIdRef = useRef(null)
   const generateClientIdRef = useRef(0)
+  const initialMessageSentRef = useRef(false)
   const generateClientId = useCallback(() => {
     generateClientIdRef.current += 1
     return `msg-${Date.now()}-${generateClientIdRef.current}-${Math.random().toString(16).slice(2)}`
@@ -542,7 +538,8 @@ const ChatWindow = ({
         console.warn('[WS chunk] ⚠️ Missing chunkText or streamId!', {chunkText: !!chunkText, streamId})
         return
       }
-      console.log('[WS chunk] 📦 Received', chunkText.length, 'chars for stream:', streamId, '(first 80 chars:', chunkText.substring(0, 80), '...)')
+      console.log('[WS chunk] 📦 Received', chunkText.length, 'chars for stream:', streamId)
+      console.log('[WS chunk] Full content:', chunkText)
       
       // Ensure stream tracking is set up (in case message_start was missed)
       if (!streamingMessageIdRef.current) {
@@ -1071,6 +1068,43 @@ const ChatWindow = ({
     return () => clearInterval(interval)
   }, [connected, chatId, userId])
 
+  const handleSurveySubmit = useCallback(async (messageId, responses) => {
+    if (!chatId || !userId) return
+
+    try {
+      const response = await axios.post('/api/surveys/inline/submit', {
+        message_id: messageId,
+        chat_id: chatId,
+        responses: responses,
+        user_id: userId
+      })
+
+      // Update the survey message with response data
+      // This makes the form show as "submitted" with the selected values
+      setMessages(prev => prev.map(msg =>
+        msg.id === messageId
+          ? { ...msg, survey_response: JSON.stringify(responses) }
+          : msg
+      ))
+
+      // Add share link message
+      if (response.data.share_message) {
+        const shareMsg = response.data.share_message
+        setMessages(prev => [...prev, {
+          id: shareMsg.id,
+          role: shareMsg.role,
+          content: shareMsg.content,
+          created_at: shareMsg.created_at,
+          chatId: chatId,
+          isOptimistic: false
+        }])
+      }
+    } catch (error) {
+      console.error('Failed to submit survey:', error)
+      throw error
+    }
+  }, [chatId, userId])
+
   const sendMessage = async (content) => {
     const trimmed = content.trim()
     if (!trimmed) return
@@ -1194,6 +1228,39 @@ const ChatWindow = ({
     }
   }
 
+  // Auto-send initial message from URL query parameter
+  useEffect(() => {
+    if (
+      initialMessage && 
+      !initialMessageSentRef.current && 
+      chatId && 
+      !isSharedView &&
+      connected &&
+      !loading
+    ) {
+      // Wait a bit for messages to load
+      const timer = setTimeout(() => {
+        if (!initialMessageSentRef.current) {
+          initialMessageSentRef.current = true
+          sendMessage(initialMessage)
+          // Notify parent that initial message was sent
+          if (onInitialMessageSent) {
+            onInitialMessageSent()
+          }
+        }
+      }, 500)
+      
+      return () => clearTimeout(timer)
+    }
+  }, [initialMessage, chatId, isSharedView, connected, loading, sendMessage, onInitialMessageSent])
+
+  // Reset initial message sent flag when chatId changes
+  useEffect(() => {
+    if (chatId) {
+      initialMessageSentRef.current = false
+    }
+  }, [chatId])
+
   const handleShare = useCallback(async () => {
     if (!chatId || !userId) return
     
@@ -1251,69 +1318,6 @@ const ChatWindow = ({
       setConnectionNotice('Failed to generate share link')
     }
   }, [chatId, userId])
-
-  // Survey handlers
-  const checkAndShowSurvey = useCallback(async (targetChatId) => {
-    const surveyMode = import.meta.env.VITE_SURVEY_MODE || 'optional'
-    if (surveyMode === 'disabled' || !targetChatId || !userId) return
-
-    try {
-      const response = await axios.get(`/api/surveys/${targetChatId}`, {
-        params: { user_id: userId }
-      })
-
-      if (!response.data.exists) {
-        // Get chat meta_info for context
-        try {
-          const chatResponse = await axios.get(`/api/chats/${targetChatId}`, {
-            params: { user_id: userId }
-          })
-          setChatMetaInfo(chatResponse.data.meta_info || '')
-        } catch (err) {
-          console.error('Failed to fetch chat meta_info:', err)
-          setChatMetaInfo('')
-        }
-        setSurveyForChatId(targetChatId)
-        setShowSurvey(true)
-      }
-    } catch (err) {
-      console.error('Failed to check survey:', err)
-    }
-  }, [userId])
-
-  const handleSurveySubmit = useCallback(async (responses) => {
-    if (!surveyForChatId || !userId) return
-
-    try {
-      await axios.post('/api/surveys', {
-        chat_id: surveyForChatId,
-        ...responses
-      }, {
-        params: { user_id: userId }
-      })
-
-      setShowSurvey(false)
-      setSurveyForChatId(null)
-    } catch (err) {
-      console.error('Failed to submit survey:', err)
-      alert('Failed to submit survey. Please try again.')
-    }
-  }, [surveyForChatId, userId])
-
-  const handleSurveySkip = useCallback(() => {
-    const surveyMode = import.meta.env.VITE_SURVEY_MODE || 'optional'
-    if (surveyMode !== 'mandatory') {
-      setShowSurvey(false)
-      setSurveyForChatId(null)
-    }
-  }, [])
-
-  // Set up survey request callback
-  useEffect(() => {
-    if (onSurveyRequested) {
-      onSurveyRequested(() => checkAndShowSurvey)
-    }
-  }, [onSurveyRequested, checkAndShowSurvey])
 
   const handleMouseDown = useCallback((e) => {
     e.preventDefault()
@@ -1405,7 +1409,7 @@ const ChatWindow = ({
     }
   }
 
-  const models = ['Auto', 'GPT-5 mini', 'GPT-5 nano', 'GPT-5.2', 'GPT-5 mini (Search)', 'GPT-5.2 (Search)']
+  const models = ['Auto']
 
   const renderModelSelector = () => (
     <div className="model-selector-container" ref={modelSelectorRef}>
@@ -1630,7 +1634,7 @@ const ChatWindow = ({
           {loading ? (
             <div className="loading-messages">Loading messages...</div>
           ) : (
-            <MessageList messages={messages} />
+            <MessageList messages={messages} onSurveySubmit={handleSurveySubmit} />
           )}
         </div>
         {canvasOpen && (
@@ -1658,18 +1662,6 @@ const ChatWindow = ({
           isStreaming={isStreaming}
         />
       </div>
-
-      {/* Survey Modal */}
-      {showSurvey && surveyForChatId && (
-        <SurveyModal
-          chatId={surveyForChatId}
-          userPreferences={chatMetaInfo}
-          onSubmit={handleSurveySubmit}
-          onSkip={handleSurveySkip}
-          isMandatory={import.meta.env.VITE_SURVEY_MODE === 'mandatory'}
-          onClose={handleSurveySkip}
-        />
-      )}
     </div>
   )
 }

@@ -408,6 +408,7 @@ async def create_environment(request: CreateEnvRequest):
         "params": "{\"env_name\": \"airline\", \"task_index\": 0}"
     }
     """
+    print(f"Create request: env_type={request.env_type}, params={request.params[:200] if len(request.params) > 200 else request.params}")
     try:
         runtime_id, meta_info = await runtime_manager.create_env(request.env_type, request.params)
 
@@ -416,8 +417,14 @@ async def create_environment(request: CreateEnvRequest):
             meta_info=meta_info,
         )
     except ValueError as e:
+        import traceback
+        print(f"ValueError in create_environment: {e!r}")
+        traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
     except ImportError as e:
+        import traceback
+        print(f"ImportError in create_environment: {e!r}")
+        traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         import traceback

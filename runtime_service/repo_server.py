@@ -669,7 +669,7 @@ def _is_readonly_command_single(command: str) -> bool:
         'xxd', 'hexdump', 'od', 'strings', 'ldd', 'objdump', 'readelf', 'nm', 'size',
         'python', 'python3', 'node', 'ruby', 'perl', 'php', 'java', 'javac', 'gcc', 'g++',
         'clang', 'make', 'cmake', 'pip', 'npm', 'yarn', 'composer', 'bundle', 'gem',
-        'cargo', 'rustc', 'go', 'docker', 'kubectl', 'git', 'true', 'false'
+        'cargo', 'rustc', 'go', 'docker', 'kubectl', 'git', 'true', 'false', 'xargs', 'cd'
     }
 
     # Commands that are never allowed (modify data or run code)
@@ -702,9 +702,6 @@ def _is_readonly_command_single(command: str) -> bool:
 
     # Patterns that indicate write operations or code execution
     dangerous_patterns = [
-        r'>(?!>)',  # Output redirection
-        r'>>',  # Append redirection
-        r'<',  # Input redirection
         r'\$\(',  # Command substitution
         r'`',  # Backtick substitution
         r'eval\s',  # eval commands
@@ -715,6 +712,23 @@ def _is_readonly_command_single(command: str) -> bool:
     for pattern in dangerous_patterns:
         if re.search(pattern, command):
             return False
+    
+    # Check for redirections (but allow redirecting to /dev/null)
+    # Allow: 2>/dev/null, 1>/dev/null, >/dev/null (safe - just discards output)
+    # Block: >file, >>file, 2>file, etc.
+    
+    # First, temporarily remove safe /dev/null redirections to check for dangerous ones
+    cmd_check = command
+    cmd_check = re.sub(r'[012]?>/dev/null', '', cmd_check)
+    cmd_check = re.sub(r'[012]?>>/dev/null', '', cmd_check)
+    
+    # Now check if there are any remaining dangerous redirections
+    if re.search(r'>(?!>)', cmd_check):  # Single > (not >>)
+        return False
+    if re.search(r'>>', cmd_check):  # Append >>
+        return False
+    if re.search(r'<', cmd_check):  # Input redirection
+        return False
 
     # Parse command safely
     try:
@@ -727,6 +741,38 @@ def _is_readonly_command_single(command: str) -> bool:
         # Check if base command is explicitly dangerous
         if base_cmd in dangerous_commands:
             return False
+
+        # Special handling for find -exec
+        if base_cmd == 'find' and '-exec' in cmd_parts:
+            try:
+                exec_idx = cmd_parts.index('-exec')
+                # Find the terminator (shlex.split converts \; to ;)
+                # Look for: ; (from \;), + (from -exec ... +), or ';' token
+                semicolon_idx = None
+                for i in range(exec_idx + 1, len(cmd_parts)):
+                    part = cmd_parts[i]
+                    # Check for terminators: ; or + or \;
+                    # After shlex.split, \; becomes ;
+                    if part in [';', '+'] or part == '\\;':
+                        semicolon_idx = i
+                        break
+                
+                if semicolon_idx is not None:
+                    # Extract the exec command (between -exec and terminator)
+                    exec_cmd_parts = cmd_parts[exec_idx + 1:semicolon_idx]
+                    if exec_cmd_parts:
+                        # Filter out {} placeholder
+                        exec_cmd_parts = [p for p in exec_cmd_parts if p != '{}']
+                        if exec_cmd_parts:
+                            # Validate that the exec'd command is readonly
+                            exec_cmd = ' '.join(exec_cmd_parts)
+                            if _is_readonly_command_single(exec_cmd):
+                                return True
+                            else:
+                                return False
+                # If no terminator found or no exec command, fall through to normal validation
+            except (ValueError, IndexError):
+                pass  # Fall through to normal validation
 
         # Check if base command is in readonly list
         if base_cmd in readonly_commands:
@@ -778,20 +824,69 @@ def is_readonly_command(command: str) -> bool:
     if len(command) > 1000:  # Prevent extremely long commands
         return False
     
-    # First, handle semicolon-separated commands (;)
-    # Split by ; but be careful about quoted strings
-    if ';' in command:
-        # Use a simple split first - semicolons are rarely quoted
+    # Special handling for find -exec with escaped semicolon before pipe parsing
+    # This prevents shlex.split from consuming the backslash in \;
+    # Pattern: find ... -exec ... \; (possibly followed by pipe, logical ops, etc.)
+    if 'find' in command and '-exec' in command and r'\;' in command:
         import re
-        # Split by ; that's not inside quotes (simple heuristic)
-        semicolon_parts = re.split(r';(?=(?:[^"]*"[^"]*")*[^"]*$)', command)
-        for part in semicolon_parts:
-            part = part.strip()
-            if part:
-                # Recursively check each semicolon-separated part
-                if not is_readonly_command(part):
+        # Extract and validate each piped/chained command separately
+        # Split by pipes and logical operators, but NOT those inside quotes
+        # This regex splits by ||, &&, or | but only outside of quoted strings
+        parts = re.split(r'\s*(\|\||&&|\|)(?=(?:[^"\']*["\'][^"\']*["\'])*[^"\']*$)\s*', command)
+        commands = []
+        operators = []
+        for i, part in enumerate(parts):
+            if i % 2 == 0:  # Command parts (not operators)
+                if part.strip():
+                    commands.append(part.strip())
+            else:  # Operators
+                operators.append(part.strip())
+        
+        # Validate each command
+        for cmd in commands:
+            # For find -exec commands, validate specially without shlex.split
+            if 'find' in cmd and '-exec' in cmd and r'\;' in cmd:
+                # Extract the -exec portion
+                exec_match = re.search(r'-exec\s+(.+?)\s*\\;', cmd)
+                if exec_match:
+                    exec_cmd = exec_match.group(1).strip()
+                    # Remove {} placeholder
+                    exec_cmd = re.sub(r'\{\}', '', exec_cmd).strip()
+                    # Validate the executed command is readonly
+                    if not _is_readonly_command_single(exec_cmd):
+                        return False
+                else:
+                    return False  # Malformed find -exec
+            else:
+                # Regular command validation
+                if not _is_readonly_command_single(cmd):
                     return False
         return True
+    
+    # First, handle semicolon-separated commands (;)
+    # Split by ; but be careful about quoted strings and escaped semicolons (\;)
+    if ';' in command:
+        # Check if it's escaped semicolon (\;) used by find -exec
+        # Don't split on \; (escaped semicolon) - it's part of find -exec syntax
+        import re
+        # Split by ; that's not inside quotes and not preceded by backslash
+        # This regex looks for ; that's not preceded by \ and not inside quotes
+        semicolon_parts = re.split(r'(?<!\\);(?=(?:[^"]*"[^"]*")*[^"]*$)', command)
+        
+        # If we only got one part, it means all semicolons are escaped (like \;)
+        # In that case, don't split - treat as a single command
+        if len(semicolon_parts) == 1:
+            # Continue to normal validation below
+            pass
+        else:
+            # We have actual command separators, validate each part
+            for part in semicolon_parts:
+                part = part.strip()
+                if part:
+                    # Recursively check each semicolon-separated part
+                    if not is_readonly_command(part):
+                        return False
+            return True
     
     # Parse the command to distinguish operators from literal strings
     # This prevents treating quoted "||" or "true" as operators
