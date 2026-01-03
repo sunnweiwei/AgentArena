@@ -561,6 +561,20 @@ def _get_swe_tokenizer():
 
 TOKENIZER = None
 
+def get_context_length(conversation):
+    global TOKENIZER
+    if TOKENIZER is None:
+        TOKENIZER = _get_swe_tokenizer()
+    tokenizer = TOKENIZER
+
+    def count_tokens(text):
+        if tokenizer:
+            return len(tokenizer.encode(text))
+        else:
+            import re
+            return len(re.findall(r'\S+', text))
+
+    return sum(count_tokens(turn.get('content', '')) for turn in conversation)
 
 def swe_context_condenser(conversation, target=10000):
     """

@@ -1,5 +1,5 @@
 from utils import call_openai, BaseEnv, RuntimeServiceError, extract_fn_call, split_agent_markup, keep_first_n_words, \
-    fn_call_to_text, clean_markdown, swe_context_condenser, swe_context_summarize
+    fn_call_to_text, clean_markdown, swe_context_condenser, swe_context_summarize, get_context_length
 from tool_prompt import convert_tools_to_description, TOOL_PROMPT
 import requests
 import threading
@@ -668,7 +668,8 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
 
     openai_client = call_openai()
     vllm_config = {
-        'seed-oss-36b': {'url': 'http://sf.lti.cs.cmu.edu:8123/v1/chat/completions', 'model': 'Seed-OSS-36B-Instruct', 'thinking_budget': 0},
+        # 'seed-oss-36b': {'url': 'http://sf.lti.cs.cmu.edu:8123/v1/chat/completions', 'model': 'Seed-OSS-36B-Instruct', 'thinking_budget': 0},
+        'seed-oss-36b': {'url': 'http://sf.lti.cs.cmu.edu:8998/v1/chat/completions', 'model': 'seed-oss-36b-instruct', 'thinking_budget': 0},
         'ppp-36b': {'url': 'http://sf.lti.cs.cmu.edu:9999/v1/chat/completions', 'model': 'seed-oss-36b-instruct-w', 'thinking_budget': -1}
     }
 
@@ -682,6 +683,13 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
                 # vllm_url = 'http://sf.lti.cs.cmu.edu:8999/v1/chat/completions'
                 cancel_event = threading.Event()
                 result_queue = queue.Queue()
+
+                if model in ['seed-oss-36b'] and get_context_length(chat) > 30_000:
+                    yield '<|note|>Summarizing conversation...<|/note|>'
+                    chat = swe_context_summarize(chat, openai_client)
+                    yield '<|note|>Conversation summarized<|/note|>'
+                    yield f'<|think|>{chat[-1]["content"]}<|/think|>'
+                    continue
 
                 def make_request_with_retry():
                     for attempt in range(2):
