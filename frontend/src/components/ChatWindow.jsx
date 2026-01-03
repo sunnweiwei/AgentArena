@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import MessageList from './MessageList'
 import MessageInput from './MessageInput'
-import { getLastCanvasContent, DiffBlock, extractCanvasContent } from './AgentBlock'
+import { getLastCanvasContent, DiffBlock, extractCanvasContent, parseAgentMarkup } from './AgentBlock'
 import './ChatWindow.css'
 
 const isDev = import.meta.env.DEV
@@ -586,11 +586,21 @@ const ChatWindow = ({
 
       // Extract canvas content BEFORE storing in state to prevent flashing
       const { content: contentWithoutCanvas, canvasContent } = extractCanvasContent(mergedText)
-      
+
       // Store the full content (with canvas) for canvas display to extract
       // But use contentWithoutCanvas for display to avoid flashing
       const contentToStore = mergedText  // Keep original for canvas extraction
       const rawContent = contentWithoutCanvas || mergedText  // For display without canvas
+
+      // Pre-compute if this has agent markup to avoid checking during render
+      const hasAgentMarkup = contentToStore && (
+        contentToStore.includes('<|think|>') ||
+        contentToStore.includes('<|tool|>') ||
+        contentToStore.includes('<|highlight|>') ||
+        contentToStore.includes('<|survey|>') ||
+        contentToStore.includes('<|survey-response|>') ||
+        contentToStore.includes('<|note|>')
+      )
 
       setMessages(prev => {
         let found = false
@@ -607,6 +617,7 @@ const ChatWindow = ({
               isStreaming: true,  // Mark as actively streaming
               content: contentToStore,  // Full content with canvas for extraction
               _displayContent: rawContent,  // Content without canvas for immediate display
+              _hasAgentMarkup: hasAgentMarkup,  // Pre-computed flag
               isOptimistic: false,
               chatId: msg.chatId ?? chunkChatId ?? currentChatId ?? null
             }
@@ -626,6 +637,7 @@ const ChatWindow = ({
               isStreaming: true,  // Mark as actively streaming
               content: contentToStore,  // Full content with canvas
               _displayContent: rawContent,  // Content without canvas
+              _hasAgentMarkup: hasAgentMarkup,  // Pre-computed flag
               created_at: new Date().toISOString(),
               isOptimistic: false,
               chatId: chunkChatId ?? currentChatId ?? null
@@ -674,6 +686,16 @@ const ChatWindow = ({
             if (isDev) {
               console.log('[WS message_complete] Updating message ID from', targetId, 'to', data.id)
             }
+            const finalContent = finalText || msg.content || ''
+            // Pre-compute if this has agent markup to avoid checking during render
+            const hasAgentMarkup = finalContent && (
+              finalContent.includes('<|think|>') ||
+              finalContent.includes('<|tool|>') ||
+              finalContent.includes('<|highlight|>') ||
+              finalContent.includes('<|survey|>') ||
+              finalContent.includes('<|survey-response|>') ||
+              finalContent.includes('<|note|>')
+            )
             const updated = {
               ...msg,
               id: data.id,
@@ -682,8 +704,9 @@ const ChatWindow = ({
               isLoading: false,
               isStreaming: false,
               created_at: data.created_at,
-              content: finalText || msg.content || '',
+              content: finalContent,
               _displayContent: undefined,  // Clear temp display content
+              _hasAgentMarkup: hasAgentMarkup,  // Pre-computed flag
               isOptimistic: false,
               chatId: resolvedChatId ?? msg.chatId ?? currentChatId ?? null
             }

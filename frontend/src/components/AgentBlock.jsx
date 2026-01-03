@@ -439,8 +439,9 @@ export function HighlightBlock({ content }) {
  * Main component to render parsed agent content
  */
 export function AgentContent({ content, showInlineLoading = false, onSurveySubmit, messageId, surveySubmitted = false, surveyValues = null }) {
-  const parts = parseAgentMarkup(content)
-  
+  // Memoize parsing to avoid re-parsing on every render (only when content changes)
+  const parts = React.useMemo(() => parseAgentMarkup(content), [content])
+
   return (
     <div className="agent-content">
       {parts.map((part, index) => {

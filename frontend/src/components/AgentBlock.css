@@ -53,7 +53,7 @@
 }
 
 .think-content-wrapper {
-  max-height: calc(0.9em * 1.6 * 5); /* 5 lines with smaller font */
+  max-height: calc(0.9em * 1.4 * 10); /* 10 lines with smaller font and compact line-height */
   overflow-y: auto;
   transition: max-height 0.3s ease, opacity 0.3s ease;
 }
@@ -67,9 +67,27 @@
 .think-content {
   font-size: 0.9em;
   opacity: 0.7;
-  white-space: pre-wrap;
+  white-space: normal;
   word-break: break-word;
-  line-height: 1.6;
+  line-height: 1.4;
+}
+
+/* Remove extra margins from markdown content in think-content for compact display */
+.think-content p,
+.think-content ul,
+.think-content ol,
+.think-content li,
+.think-content h1,
+.think-content h2,
+.think-content h3,
+.think-content h4,
+.think-content h5,
+.think-content h6 {
+  margin: 0.2em 0;
+}
+
+.think-content p {
+  margin-bottom: 0.3em;
 }
 
 /* Scrollbar for think content - only visible when scrolling */
@@ -92,6 +110,11 @@
 
 .think-content-wrapper::-webkit-scrollbar-thumb:active {
   background: rgba(0, 0, 0, 0.25);
+}
+
+/* Spacing between unfolded think block and tool call */
+.agent-block.think + .agent-block.tool-call {
+  margin-top: 10px;
 }
 
 /* Tool Call Block - matches user message background */

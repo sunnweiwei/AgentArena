@@ -41,7 +41,7 @@ Your primary role is to fix repository issues by:
 4. VERIFICATION: Review your changes by reading the modified files to ensure they are correct
 </WORKFLOW>
 
-All your responses must be in English, strictly English only. You are an intelligent assistant that can work without the need for reasoning and thinking, that is, your thinking budget is 0. Next, please skip the thinking process and directly start working on the problem.'''
+All your responses must be in **English**, strictly English only. You are an intelligent assistant that can work without the need for reasoning and thinking, that is, your thinking budget is 0. Next, please skip the thinking process and directly start working on the problem.'''
 
 
 def codeact_tool():
@@ -148,7 +148,7 @@ Notes for using the `str_replace` command:
                 'properties': {
                     'message': {
                         'type': 'string',
-                        'description': 'A comprehensive message describing task completion, results achieved, any state changes made, key insights discovered, and other notes.',
+                        'description': 'A comprehensive English message describing task completion, results achieved, any state changes made, key insights discovered, and other notes.',
                     },
                 },
                 'required': ['message'],
@@ -373,7 +373,7 @@ def get_user_prompt(problem_statement, instance_id, be_fast=False):
         f"4. VERIFICATION: Review your changes by reading the modified files to ensure they are correct\n\n"
         f"You do not need to write any test or run any test. Just implement the fix and finish the task.\n\n"
         f"{speed}"
-        f"User issues are sometimes vague or underspecified, for example, the question is short and lack details. So you need to use the ask_question tool to request clarification to ensure your work is correct.\n\n"
+        f"User issues are sometimes vague or underspecified, for example, the question is short and lack details. So you need to use the ask_question tool to request clarification to ensure your work is correct. Only ask key questions that can address the blocker.\n\n"
         f"For example:\n<function=ask_question><parameter=query>your question, must in English and be clear, and specific</parameter></function>\n\nDo not ask questions at the beginning. Communicating with user with good kill. Proactively ask using ask_question tool, but avoid ask too many question. Never ask multiple similar questions. If you need further clarification, explain clearly what you need.\n\n"
         f"The user’s preference for the agent is: {preference}\n\nYou must ensure that your questions follow the user’s preference. If you ask questions that are not aligned with the user’s preference, you will be penalized.\n\n"
         f"Ensure your questions align with the user’s preferences and are easy for the user to answer. You will be rewarded for asking good, targeted questions when the user’s query is unclear, and penalized for asking poor questions, such as questions the user cannot easily answer or questions that do not address key blockers.\n\n"
@@ -423,14 +423,14 @@ def get_survey():
                 "type": "select",
                 "question": "Did the clarifying questions help the agent make progress toward solving the problem?",
                 "description": "Think about whether the questions improved direction/next steps.",
-                "options": ["N/A (no questions)", "No", "Somewhat", "Yes"],
+                "options": ["N/A (no questions)", "No", "Somewhat", "Yes", "Excellent"],
             },
             {
                 "id": "interaction_flow",
                 "type": "select",
                 "question": "How smooth was the overall interaction during clarification?",
                 "description": "Think about pacing, when it chose to ask vs act, and whether it felt natural.",
-                "options": ["N/A (no questions)", "Not smooth", "OK", "Smooth"],
+                "options": ["N/A (no questions)", "Not smooth", "OK", "Smooth", "Excellent"],
             },
             {
                 "id": "preference_align",
@@ -768,8 +768,18 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
                         answer = f'<function=think><parameter=content>{summarized}</parameter></function>'
                         chat.append({'role': 'assistant', 'content': reasoning + '\n\n' + answer})
                     else:
-                        reasoning, answer = "", content
-                        chat.append({'role': 'assistant', 'content': content})
+                        # Check for only closing tag (no opening tag)
+                        closing_only_match = re.search(r'^(.*?)(</seed:think>|</seed:cot_budget_reflect>)', content,
+                                                       re.DOTALL)
+                        if closing_only_match:
+                            reasoning = closing_only_match.group(1).strip().replace('\n\n', '\n')
+                            answer = re.sub(r'^.*?(</seed:think>|</seed:cot_budget_reflect>)', '', content,
+                                          flags=re.DOTALL).strip()
+                            chat.append({'role': 'assistant', 'content': content})
+                        else:
+                            reasoning, answer = "", content
+                            chat.append({'role': 'assistant', 'content': content})
+                reasoning = reasoning.replace('seed:cot_budget_reflect', '')
 
             except Exception as e:
                 yield f"<|note|>⚠️ **vLLM Error**: {type(e).__name__}: {str(e)}<|/note|>"
@@ -823,7 +833,7 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
                     if single_fn['name'] == 'ask_question':
                         question_to_ask = single_fn.get('arguments', {}).get('query')
                         question_to_ask = call_openai(
-                            f"Repeat this question with no other words. Output in pure English; if it contains any non-English words, convert them to English. You can add line break to make it better format in markdown and easy to read, but do not change content.\n\n{question_to_ask}")
+                            f"Repeat this question with no other words. Output in pure English; if it contains any non-English words, convert them to English. You can improve the formatting in Markdown to make it easier to read, but do not change the content.\n\n{question_to_ask}")
                         yield f"<|highlight|>{clean_markdown(question_to_ask.strip())}<|/highlight|>"
                         return
                     # Create a unique key based on function name and arguments
