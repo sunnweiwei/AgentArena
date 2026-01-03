@@ -7,8 +7,7 @@ from openai import OpenAI
 RUNTIME_SERVICE_URL = os.getenv("RUNTIME_SERVICE_URL", "http://sf.lti.cs.cmu.edu:8005")
 
 
-def call_openai():
-    # Load API keys
+def call_openai(prompt=None):
     OPENAI_API_KEY = None
     try:
         key_path = os.path.join(os.path.dirname(__file__), '..', '..', 'openaikey')
@@ -29,7 +28,22 @@ def call_openai():
     if OPENAI_API_KEY:
         openai_client = OpenAI(api_key=OPENAI_API_KEY)
         print("OpenAI client initialized successfully")
-    return openai_client
+    if prompt is None:
+        return openai_client
+    else:
+        chat = [{'role': 'user', 'content': prompt}]
+        response = openai_client.responses.create(
+            model='gpt-5-nano',
+            input=chat,
+            reasoning={"effort": "low"},
+        )
+        answer = ""
+        for item in response.output:
+            if item.type == 'message':
+                answer += '\n\n' if len(answer) > 0 else ''
+                answer += item.content[0].text
+        return answer
+
 
 
 def extract_fn_call(text):
@@ -444,7 +458,7 @@ class BaseEnv:
 import re
 from typing import List, Dict
 
-_TAG_RE = re.compile(r"<\|(think|tool|canvas|highlight|survey)\|>(.*?)<\|/\1\|>", re.DOTALL)
+_TAG_RE = re.compile(r"<\|(think|tool|canvas|highlight|survey|note)\|>(.*?)<\|/\1\|>", re.DOTALL)
 
 
 def split_agent_markup(s: str) -> List[Dict[str, str]]:
@@ -515,15 +529,19 @@ def clean_markdown(text):
     text = text.replace('\n# ', '\n### ')
     text = text.replace('\n## ', '\n#### ')
     text = text.replace('\n### ', '\n##### ')
+    # Preserve single line breaks in markdown by converting softbreaks to hardbreaks
+    # without touching fenced code blocks.
     parts = re.split(r'(```[\s\S]*?```)', text)
     result = []
-    for i, part in enumerate(parts):
+    for part in parts:
         if part.startswith('```'):
             result.append(part)
         else:
+            # Add two spaces before single newlines (for markdown line breaks)
+            # Don't do this for blank lines (double newlines)
             processed = re.sub(r'(?<!\n)\n(?!\n)', '  \n', part)
             result.append(processed)
-    return text
+    return ''.join(result)
 
 
 # Cache tokenizer at module level
@@ -677,22 +695,26 @@ def swe_context_summarize(conversation, openai_client):
                   f"{conversation[-1]['role']}: {keep_first_n_words(conversation[-1]['content'], 256)}\n\n")
     conversation = conversation + [{'role': 'user', 'content': SUMMARY_PROMPT}]
 
-    response = openai_client.responses.create(
-        model='gpt-5-mini',
-        input=conversation,
-    )
-    answer = ""
-    for item in response.output:
-        if item.type == 'message':
-            answer += '\n\n' if len(answer) > 0 else ''
-            answer += item.content[0].text
-    summary = extract_summary(answer)
-    if summary:
-        summary = answer
+    summary = None
+    for _ in range(3):
+        response = openai_client.responses.create(
+            model='gpt-5-mini',
+            input=conversation,
+        )
+        answer = ""
+        for item in response.output:
+            if item.type == 'message':
+                answer += '\n\n' if len(answer) > 0 else ''
+                answer += item.content[0].text
+        summary = extract_summary(answer)
+        if not summary:
+            summary = answer
+        if summary:
+            break
     new_conversation = conversation[:3]
 
     if new_conversation[-1]['role'] == 'user':
-        new_conversation.append({'role': 'assistant', 'content': str(response)})
+        new_conversation.append({'role': 'assistant', 'content': ""})
     new_conversation += [
         {'role': 'user',
          'content': f"For this question, AI have already made the following progress in previous session, summarized as follow:\n\n{summary}\n\n"

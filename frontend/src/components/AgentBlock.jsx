@@ -199,8 +199,8 @@ export function parseAgentMarkup(content) {
   const parts = []
   let position = 0
 
-  // First pass: find <|think|>, <|tool|>, <|highlight|>, <|survey|>, and <|survey-response|> blocks
-  const blockRegex = /<\|(think|tool|highlight|survey|survey-response)\|>(.*?)<\|\/\1\|>/gs
+  // First pass: find <|think|>, <|tool|>, <|highlight|>, <|survey|>, <|survey-response|>, and <|note|> blocks
+  const blockRegex = /<\|(think|tool|highlight|survey|survey-response|note)\|>(.*?)<\|\/\1\|>/gs
   const matches = [...content.matchAll(blockRegex)]
 
   for (const match of matches) {
@@ -232,6 +232,9 @@ export function parseAgentMarkup(content) {
     } else if (match[1] === 'survey-response') {
       // Survey response block - submitted values
       parts.push({ type: 'survey-response', content: match[2] })
+    } else if (match[1] === 'note') {
+      // Note block - lighter colored text, inline
+      parts.push({ type: 'note', content: match[2] })
     }
 
     position = endIndex
@@ -280,7 +283,36 @@ export function parseAgentMarkup(content) {
     })
   }
 
-  return groupedParts.length > 0 ? groupedParts : [{ type: 'text', content: content }]
+  // Collapse consecutive note blocks - keep only the last one in each sequence
+  // Skip if the last note is empty
+  const finalParts = []
+  let noteGroup = []
+  
+  for (const part of groupedParts) {
+    if (part.type === 'note') {
+      noteGroup.push(part)
+    } else {
+      if (noteGroup.length > 0) {
+        // Only keep the last note in the group, but skip if it's empty
+        const lastNote = noteGroup[noteGroup.length - 1]
+        if (lastNote.content && lastNote.content.trim()) {
+          finalParts.push(lastNote)
+        }
+        noteGroup = []
+      }
+      finalParts.push(part)
+    }
+  }
+  
+  // Don't forget remaining notes - keep only the last one, but skip if empty
+  if (noteGroup.length > 0) {
+    const lastNote = noteGroup[noteGroup.length - 1]
+    if (lastNote.content && lastNote.content.trim()) {
+      finalParts.push(lastNote)
+    }
+  }
+
+  return finalParts.length > 0 ? finalParts : [{ type: 'text', content: content }]
 }
 
 /**
@@ -546,6 +578,46 @@ export function AgentContent({ content, showInlineLoading = false, onSurveySubmi
             console.error('Failed to parse survey response:', e)
             return null
           }
+        } else if (part.type === 'note') {
+          // Note block - render as normal text but with lighter color
+          const isLastPart = index === parts.length - 1
+          return (
+            <div key={index} className="agent-text note-text">
+              <ReactMarkdown 
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeRaw]}
+                components={{
+                  img: ({node, ...props}) => (
+                    <img 
+                      {...props} 
+                      style={{maxWidth: '100%', height: 'auto', borderRadius: '8px', marginTop: '8px', marginBottom: '8px'}}
+                      loading="lazy"
+                    />
+                  ),
+                  code: ({node, inline, className, children, ...props}) => {
+                    const match = /language-(\w+)/.exec(className || '')
+                    const language = match ? match[1] : ''
+                    const codeContent = String(children).replace(/\n$/, '')
+                    
+                    if (!inline && (language === 'diff' || language === 'patch')) {
+                      return <DiffBlock content={codeContent} />
+                    }
+                    
+                    return <code className={className} {...props}>{children}</code>
+                  }
+                }}
+              >
+                {part.content}
+              </ReactMarkdown>
+              {showInlineLoading && isLastPart && (
+                <span className="inline-loading">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </span>
+              )}
+            </div>
+          )
         }
         return null
       })}

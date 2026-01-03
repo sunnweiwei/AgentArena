@@ -2,22 +2,89 @@ import React, { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 import { useTheme } from '../contexts/ThemeContext'
 import Sidebar from './Sidebar'
+import AdminDashboard from './AdminDashboard'
 import ChatWindow from './ChatWindow'
 import './ChatInterface.css'
 
 const ChatInterface = ({ user, onLogout, onLogin }) => {
+  const ADMIN_DASHBOARD_CHAT_ID = '__admin_dashboard__'
   const noop = () => {}
   const { theme, toggleTheme } = useTheme()
   const [chats, setChats] = useState([])
   const [currentChatId, setCurrentChatId] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [sidebarOpen, setSidebarOpen] = useState(false) // Closed by default
   const [pendingChats, setPendingChats] = useState({})
   const [sharedChat, setSharedChat] = useState(null) // Shared chat data when viewing via share link
   const [shareToken, setShareToken] = useState(null) // Share token from URL
   const [initialMessage, setInitialMessage] = useState(null) // Message to send automatically from URL
   const [isCreatingQueryChat, setIsCreatingQueryChat] = useState(false) // Flag to prevent normal chat loading when creating query chat
+  const [adminUsers, setAdminUsers] = useState([]) // For admin: list of users with their chats
+  const [adminStats, setAdminStats] = useState(null) // For admin: statistics data
+  const [sidebarOpen, setSidebarOpen] = useState(false) // Closed by default
   const canUseChat = Boolean(user && user.user_id)
+  const isAdmin = user?.email === 'IJIgxK'
+
+  // Auto-open sidebar for admin users
+  useEffect(() => {
+    if (isAdmin) {
+      setSidebarOpen(true)
+    }
+  }, [isAdmin])
+
+  // Default to dashboard view for admin
+  useEffect(() => {
+    if (!isAdmin) return
+    if (!currentChatId) {
+      setCurrentChatId(ADMIN_DASHBOARD_CHAT_ID)
+    }
+  }, [isAdmin, currentChatId])
+
+  const getAdminChats = () => {
+    const users = adminUsers || []
+    
+    // Separate admin user and other users
+    let adminUser = null
+    const otherUsers = []
+    
+    for (const u of users) {
+      const chatsForUser = u.chats || []
+      if (chatsForUser.length === 0) continue
+      
+      if (u.user_email === 'IJIgxK') {
+        adminUser = u
+      } else {
+        otherUsers.push(u)
+      }
+    }
+    
+    // Sort other users alphabetically by email/username
+    otherUsers.sort((a, b) => {
+      const labelA = (a.user_email || `user_${a.user_id}`).split('@')[0].toLowerCase()
+      const labelB = (b.user_email || `user_${b.user_id}`).split('@')[0].toLowerCase()
+      return labelA.localeCompare(labelB)
+    })
+    
+    // Build grouped array with admin first
+    const grouped = []
+    const sortedUsers = adminUser ? [adminUser, ...otherUsers] : otherUsers
+    
+    for (const u of sortedUsers) {
+      const userLabel = (u.user_email || `user_${u.user_id}`).split('@')[0]
+      const chatsForUser = u.chats || []
+      
+      grouped.push({
+        id: `__admin_group__:${u.user_id}`,
+        kind: 'group',
+        title: userLabel,
+        chats: chatsForUser.map(c => ({
+          id: c.id,
+          title: c.title || 'Untitled Chat'
+        }))
+      })
+    }
+
+    return grouped
+  }
 
   // Check for share token or query parameter in URL
   useEffect(() => {
@@ -26,26 +93,49 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
     const query = urlParams.get('query')
     
     if (share) {
-      setShareToken(share)
-      // Load shared chat
+      // Load shared chat data to get the chat ID
       axios.get(`/api/shared/${share}`)
         .then(response => {
-          setSharedChat(response.data)
-          setCurrentChatId(response.data.id)
-          setLoading(false)
+          // If user is admin, redirect to the real chat instead of showing read-only view
+          if (isAdmin) {
+            console.log('[ChatInterface] Admin detected, redirecting to real chat instead of shared view')
+            // Clear share parameter from URL and redirect to the real chat
+            const newUrl = new URL(window.location)
+            newUrl.searchParams.delete('share')
+            window.history.replaceState({}, '', newUrl)
+            // Set the current chat ID to load it normally
+            setCurrentChatId(response.data.id)
+            setLoading(false)
+          } else {
+            // Non-admin users see the read-only shared view
+            setShareToken(share)
+            setSharedChat(response.data)
+            setCurrentChatId(response.data.id)
+            setLoading(false)
+          }
         })
         .catch(error => {
           console.error('Failed to load shared chat:', error)
           setLoading(false)
         })
-    } else if (query && canUseChat) {
-      console.log('[ChatInterface] Query parameter detected, creating new chat:', query)
+    } else if (query) {
+      // Store query parameter for later use (after login if needed)
+      const decodedQuery = decodeURIComponent(query)
+      setInitialMessage(decodedQuery)
+      
+      // If user is not logged in, just set loading to false so login screen shows
+      if (!canUseChat) {
+        console.log('[ChatInterface] Query parameter detected but user not logged in, showing login')
+        setLoading(false)
+        // Don't clear the query param yet - we need it after login
+        return
+      }
+      
+      // User is logged in - create chat and send query
+      console.log('[ChatInterface] Query parameter detected, creating new chat:', decodedQuery)
       
       // Set flag to prevent normal chat loading
       setIsCreatingQueryChat(true)
-      
-      // Create a new chat and send the query message
-      const decodedQuery = decodeURIComponent(query)
       
       // Create new chat first
       axios.post('/api/chats', null, {
@@ -56,8 +146,6 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
           console.log('[ChatInterface] New chat created for query:', newChat.id)
           setCurrentChatId(newChat.id)
           localStorage.setItem('lastChatId', newChat.id)
-          // Set initial message after chat is created
-          setInitialMessage(decodedQuery)
           // Clear the query param from URL AFTER everything is set up
           const newUrl = window.location.pathname
           window.history.replaceState({}, '', newUrl)
@@ -74,7 +162,7 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
           setLoading(false)
         })
     }
-  }, [canUseChat, user?.user_id])
+  }, [canUseChat, user?.user_id, isAdmin])
 
   // Check for active streams on mount and update pendingChats
   useEffect(() => {
@@ -123,6 +211,12 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
     }
     
     if (canUseChat) {
+      // Admin loads all users' chats
+      if (isAdmin) {
+        loadAdminData()
+        return
+      }
+      
       // Try to restore last selected chat from localStorage
       const savedChatId = localStorage.getItem('lastChatId')
       
@@ -171,7 +265,7 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
       setChats([])  // Clear chats
       setLoading(false)
     }
-  }, [user, shareToken])
+  }, [user, shareToken, isAdmin])
 
   const loadChats = async () => {
     if (!user || !user.user_id) {
@@ -191,6 +285,28 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
     } catch (err) {
       console.error('Failed to load chats:', err)
       return []
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadAdminData = async () => {
+    if (!isAdmin) return
+    
+    try {
+      // Load all chats grouped by user
+      const chatsResponse = await axios.get('/api/admin/all-chats', {
+        params: { user_id: user.email }
+      })
+      setAdminUsers(chatsResponse.data.users || [])
+      
+      // Load statistics
+      const statsResponse = await axios.get('/api/admin/stats', {
+        params: { user_id: user.email }
+      })
+      setAdminStats(statsResponse.data)
+    } catch (err) {
+      console.error('Failed to load admin data:', err)
     } finally {
       setLoading(false)
     }
@@ -240,9 +356,18 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
   }
 
   const selectChat = (chatId) => {
+    if (isAdmin) {
+      if (chatId === ADMIN_DASHBOARD_CHAT_ID) {
+        setCurrentChatId(ADMIN_DASHBOARD_CHAT_ID)
+        return
+      }
+    }
+
     setCurrentChatId(chatId)
-    // Save to localStorage so we can restore on page refresh
-    localStorage.setItem('lastChatId', chatId)
+    // Save to localStorage so we can restore on page refresh (normal users only)
+    if (!isAdmin) {
+      localStorage.setItem('lastChatId', chatId)
+    }
     // Only close sidebar on mobile
     if (window.innerWidth <= 768) {
       setSidebarOpen(false)
@@ -332,11 +457,18 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
   return (
     <div className="chat-interface">
       <Sidebar
-        chats={canUseChat ? chats : []}
-        currentChatId={canUseChat ? currentChatId : null}
-        pendingChats={canUseChat ? pendingChats : {}}
+        chats={isAdmin ? getAdminChats() : (canUseChat ? chats : [])}
+        currentChatId={
+          isAdmin
+            ? (currentChatId || ADMIN_DASHBOARD_CHAT_ID)
+            : (canUseChat ? currentChatId : null)
+        }
+        pendingChats={canUseChat && !isAdmin ? pendingChats : {}}
         onSelectChat={canUseChat ? selectChat : noop}
         onCreateChat={canUseChat ? createNewChat : noop}
+        onOpenDashboard={isAdmin ? () => setCurrentChatId(ADMIN_DASHBOARD_CHAT_ID) : undefined}
+        dashboardActive={isAdmin && (!currentChatId || currentChatId === ADMIN_DASHBOARD_CHAT_ID)}
+        dashboardLabel="📊 Admin Dashboard"
         onLogout={handleLogout}
         user={user}
         isOpen={sidebarOpen}
@@ -345,20 +477,25 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
         toggleTheme={toggleTheme}
         isLocked={!canUseChat}
       />
-      <ChatWindow
-        chatId={currentChatId}
-        userId={user?.user_id}
-        onUpdateTitle={updateChatTitle}
-        onChatUpdate={refreshChats}
-        onCreateChat={createNewChat}
-        user={user}
-        onLogin={onLogin}
-        sidebarOpen={sidebarOpen}
-        onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
-        onChatPendingStateChange={handleChatPendingStateChange}
-        initialMessage={initialMessage}
-        onInitialMessageSent={() => setInitialMessage(null)}
-      />
+      
+      {isAdmin && (!currentChatId || currentChatId === ADMIN_DASHBOARD_CHAT_ID) ? (
+        <AdminDashboard stats={adminStats} />
+      ) : (
+        <ChatWindow
+          chatId={currentChatId}
+          userId={user?.user_id}
+          onUpdateTitle={updateChatTitle}
+          onChatUpdate={isAdmin ? loadAdminData : refreshChats}
+          onCreateChat={createNewChat}
+          user={user}
+          onLogin={onLogin}
+          sidebarOpen={sidebarOpen}
+          onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+          onChatPendingStateChange={handleChatPendingStateChange}
+          initialMessage={initialMessage}
+          onInitialMessageSent={() => setInitialMessage(null)}
+        />
+      )}
     </div>
   )
 }

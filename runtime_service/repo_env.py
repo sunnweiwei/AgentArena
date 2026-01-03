@@ -1802,7 +1802,8 @@ class NewRepairEnv:
         import shutil
         
         # Create unique working directory
-        cache_base = os.getenv('REPO_CACHE_DIR', '/tmp/repo_working')
+        # Use /usr1 which has much more disk space than /tmp
+        cache_base = os.getenv('REPO_CACHE_DIR', '/usr1/data/weiweis/chat_server/repo_working')
         self.working_dir = f"{cache_base}/{self.session_id}"
         
         # Clean up if exists (shouldn't happen with UUID)
@@ -1937,6 +1938,17 @@ class NewRepairEnv:
     def _view_file(self, path: str, view_range: list = None) -> str:
         """View file content with optional line range"""
         path = self._clean_path(path)
+        real_path = self._get_working_path(path)
+        
+        # Check if path is a directory
+        if os.path.isdir(real_path):
+            try:
+                items = sorted(os.listdir(real_path))
+                if not items:
+                    return f"Directory {path} is empty"
+                return f"Directory listing for {path}:\n" + "\n".join(items)
+            except Exception as e:
+                return f"Error listing directory {path}: {e}"
         
         try:
             content = self._read_file(path)

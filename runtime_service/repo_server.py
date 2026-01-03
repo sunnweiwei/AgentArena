@@ -667,9 +667,11 @@ def _is_readonly_command_single(command: str) -> bool:
         'ifconfig', 'ip', 'ping', 'curl', 'wget', 'tree', 'less', 'more', 'nl',
         'zcat', 'zless', 'zmore', 'bzcat', 'bzless', 'bzmore', 'xzcat', 'xzless', 'xzmore',
         'xxd', 'hexdump', 'od', 'strings', 'ldd', 'objdump', 'readelf', 'nm', 'size',
-        'python', 'python3', 'node', 'ruby', 'perl', 'php', 'java', 'javac', 'gcc', 'g++',
-        'clang', 'make', 'cmake', 'pip', 'npm', 'yarn', 'composer', 'bundle', 'gem',
-        'cargo', 'rustc', 'go', 'docker', 'kubectl', 'git', 'true', 'false', 'xargs', 'cd'
+        # Removed: python, python3, node, ruby, perl, php - these execute arbitrary code
+        # Removed: java, javac, gcc, g++, clang, make, cmake - these compile/run code
+        # Removed: pip, npm, yarn, composer, bundle, gem, cargo, rustc, go - package managers that can install/run code
+        # Removed: docker, kubectl - container management (security risk)
+        'git', 'true', 'false', 'xargs', 'cd'
     }
 
     # Commands that are never allowed (modify data or run code)
@@ -681,23 +683,21 @@ def _is_readonly_command_single(command: str) -> bool:
         'apt', 'yum', 'dnf', 'pacman', 'zypper', 'emerge', 'pkg', 'brew',
         'crontab', 'at', 'batch', 'nohup', 'screen', 'tmux',
         'export', 'unset', 'alias', 'unalias', 'source',
-        'kill', 'killall', 'pkill', 'killall5'
+        'kill', 'killall', 'pkill', 'killall5',
+        # Interpreters and compilers that execute arbitrary code
+        'python', 'python2', 'python3', 'node', 'nodejs', 'ruby', 'perl', 'php', 'bash', 'sh', 'zsh',
+        # Compilers and build tools
+        'java', 'javac', 'gcc', 'g++', 'clang', 'clang++', 'make', 'cmake', 'cc', 'c++',
+        # Package managers that can install/run code
+        'pip', 'pip2', 'pip3', 'npm', 'yarn', 'composer', 'bundle', 'gem', 'cargo', 'rustc', 'go',
+        # Container/VM management
+        'docker', 'podman', 'kubectl', 'vagrant', 'vboxmanage'
     }
 
     # Readonly subcommands for various tools
     readonly_subcommands = {
-        'pip': {'list', 'show', 'search', 'check', 'freeze', '--version', '-V'},
-        'npm': {'list', 'ls', 'show', 'info', 'search', 'view', '--version', '-v'},
-        'yarn': {'list', 'info', 'why', '--version', '-v'},
-        'composer': {'show', 'info', 'search', 'depends', 'why', '--version', '-V'},
-        'bundle': {'list', 'show', 'info', '--version', '-v'},
-        'gem': {'list', 'search', 'info', 'specification', '--version', '-v'},
-        'cargo': {'search', 'tree', '--version', '-V'},
-        'go': {'list', 'version', 'env'},
-        'docker': {'images', 'ps', 'version', 'info', 'stats'},
-        'kubectl': {'get', 'describe', 'logs', 'version', 'cluster-info'},
+        # Only git has readonly subcommands now (other interpreters/tools removed from readonly_commands)
         'git': {'log', 'show', 'diff', 'status', 'branch', 'remote', 'config', 'blame', 'shortlog', 'grep', 'ls-files', 'ls-tree', 'rev-parse', 'describe', 'tag', 'cat-file', 'rev-list'},
-        'make': {'-n', '--dry-run', '--just-print', '--recon', '--what-if'}
     }
 
     # Patterns that indicate write operations or code execution
@@ -716,18 +716,24 @@ def _is_readonly_command_single(command: str) -> bool:
     # Check for redirections (but allow redirecting to /dev/null)
     # Allow: 2>/dev/null, 1>/dev/null, >/dev/null (safe - just discards output)
     # Block: >file, >>file, 2>file, etc.
+    # Also ignore < and > inside quoted strings (they're part of patterns/arguments)
     
     # First, temporarily remove safe /dev/null redirections to check for dangerous ones
     cmd_check = command
     cmd_check = re.sub(r'[012]?>/dev/null', '', cmd_check)
     cmd_check = re.sub(r'[012]?>>/dev/null', '', cmd_check)
     
-    # Now check if there are any remaining dangerous redirections
-    if re.search(r'>(?!>)', cmd_check):  # Single > (not >>)
+    # Remove quoted strings (both single and double quotes) to avoid false positives
+    # This prevents < and > inside quotes from being treated as redirections
+    cmd_check_no_quotes = re.sub(r'"[^"]*"', '', cmd_check)  # Remove double-quoted strings
+    cmd_check_no_quotes = re.sub(r"'[^']*'", '', cmd_check_no_quotes)  # Remove single-quoted strings
+    
+    # Now check if there are any remaining dangerous redirections OUTSIDE quotes
+    if re.search(r'>(?!>)', cmd_check_no_quotes):  # Single > (not >>)
         return False
-    if re.search(r'>>', cmd_check):  # Append >>
+    if re.search(r'>>', cmd_check_no_quotes):  # Append >>
         return False
-    if re.search(r'<', cmd_check):  # Input redirection
+    if re.search(r'<', cmd_check_no_quotes):  # Input redirection
         return False
 
     # Parse command safely
@@ -776,30 +782,16 @@ def _is_readonly_command_single(command: str) -> bool:
 
         # Check if base command is in readonly list
         if base_cmd in readonly_commands:
-            # For commands with subcommands, check if subcommand is readonly
+            # For commands with subcommands (e.g., git), check if subcommand is readonly
             if base_cmd in readonly_subcommands and len(cmd_parts) > 1:
                 subcommand = cmd_parts[1]
                 # Allow if subcommand is in readonly list OR if it's a flag/option
                 if subcommand in readonly_subcommands[base_cmd] or subcommand.startswith('-'):
                     return True
-                # For pip, npm, etc., check for readonly patterns
-                if base_cmd == 'pip' and subcommand in {'list', 'show', 'search', 'check', 'freeze'}:
-                    return True
-                if base_cmd == 'npm' and subcommand in {'list', 'ls', 'show', 'info', 'search', 'view'}:
-                    return True
-                if base_cmd == 'git' and subcommand in {'log', 'show', 'diff', 'status', 'branch', 'remote', 'config',
-                                                        'blame', 'shortlog'}:
-                    return True
-                # If subcommand is not explicitly readonly, check if it contains install/modify keywords
-                dangerous_subcommands = {'install', 'uninstall', 'update', 'upgrade', 'remove', 'add', 'delete', 'set',
-                                         'config', 'init', 'create', 'push', 'pull', 'commit', 'merge', 'rebase'}
-                if subcommand in dangerous_subcommands:
-                    return False
-                # Allow version checks and help
-                if subcommand in {'--version', '-v', '-V', '--help', '-h'}:
-                    return True
+                # If subcommand is not explicitly readonly, block it
+                return False
             else:
-                # Simple command without subcommands
+                # Simple command without subcommands (e.g., ls, cat, grep)
                 return True
 
         # Check against whitelist patterns
@@ -811,7 +803,19 @@ def _is_readonly_command_single(command: str) -> bool:
         # If we get here, command is not recognized as readonly
         return False
 
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError) as e:
+        # shlex.split() can fail on malformed quotes or special characters
+        # Try a fallback: check if base command is safe
+        # (re is already imported at module level)
+        # Extract first word as base command
+        match = re.match(r'^\s*(\S+)', command)
+        if match:
+            base_cmd = match.group(1)
+            # Check if it's in readonly commands
+            if base_cmd in readonly_commands:
+                # For common commands like grep, allow them even with parsing issues
+                # as long as there are no dangerous patterns
+                return True
         return False
 
 

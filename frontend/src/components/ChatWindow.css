@@ -650,14 +650,15 @@
 
 .login-input-wrapper {
   display: flex;
+  flex-direction: column;
   gap: 12px;
-  max-width: 500px;
+  max-width: 400px;
   width: 100%;
-  margin-top: 20px;
+  margin: 20px auto 0;
 }
 
 .login-input-inline {
-  flex: 1;
+  width: 100%;
   padding: 14px 16px;
   border: 1px solid var(--border-color);
   border-radius: 8px;
@@ -677,6 +678,7 @@
 }
 
 .login-button-inline {
+  width: 100%;
   padding: 14px 24px;
   background: var(--accent);
   color: white;

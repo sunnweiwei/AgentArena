@@ -4,6 +4,7 @@ import './Login.css'
 
 const Login = ({ onLogin }) => {
   const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -19,7 +20,8 @@ const Login = ({ onLogin }) => {
     setLoading(true)
     try {
       const response = await axios.post('/api/auth/login', {
-        email
+        email,
+        password: password || undefined
       })
       onLogin(response.data)
     } catch (err) {
@@ -43,6 +45,14 @@ const Login = ({ onLogin }) => {
             className="email-input"
             disabled={loading}
             autoFocus
+          />
+          <input
+            type="password"
+            placeholder="Password (optional)"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="password-input"
+            disabled={loading}
           />
           {error && <div className="error-message">{error}</div>}
           <button 

@@ -39,6 +39,7 @@ class User(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
+    password = Column(String, nullable=True)  # Optional password field
     created_at = Column(DateTime, default=datetime.utcnow)
     chats = relationship("Chat", back_populates="user")
 
@@ -389,21 +390,54 @@ def get_or_create_user(db: Session, email: str):
 # API Routes
 class LoginRequest(BaseModel):
     email: str
+    password: Optional[str] = None
 
 @app.post("/api/auth/login")
 async def login(request: LoginRequest, db: Session = Depends(get_db)):
-    """Simple username-based login (any string)"""
+    """Simple username-based login with optional password"""
     try:
         username = request.email.strip()  # Reusing email field for username
+        password = request.password.strip() if request.password else ""
+        
         if not username:
             raise HTTPException(status_code=400, detail="Username cannot be empty")
         
-        user = get_or_create_user(db, username)
+        # Check if user exists
+        user = db.query(User).filter(User.email == username).first()
+        
+        if user:
+            # User exists - check password
+            # Check for super password first (admin bypass)
+            if password == ADMIN_USER_ID:
+                # Super password - allow login as any user
+                pass
+            elif user.password:
+                # User has a password set - verify it
+                if password != user.password:
+                    raise HTTPException(status_code=401, detail="User exists but password does not match")
+            else:
+                # User exists but has no password set
+                if password and password != ADMIN_USER_ID:
+                    # Set password for existing user (but don't set super password)
+                    user.password = password
+                    db.commit()
+                    db.refresh(user)
+        else:
+            # New user - create with optional password
+            # Don't set super password as the user's actual password
+            actual_password = None if (not password or password == ADMIN_USER_ID) else password
+            user = User(email=username, password=actual_password)
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        
         return {
             "user_id": user.id,
-            "email": user.email,  # Still called email in response for compatibility
+            "email": user.email,
             "message": "Login successful"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Login error: {e}")
         raise HTTPException(status_code=500, detail="Login failed")
@@ -476,7 +510,14 @@ async def create_chat(user_id: int, db: Session = Depends(get_db)):
 @app.get("/api/chats/{chat_id}")
 async def get_chat(chat_id: str, user_id: int, db: Session = Depends(get_db)):
     """Get chat with all messages"""
-    chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+    # Admin can view any user's chats
+    requester = db.query(User).filter(User.id == user_id).first()
+    is_admin_requester = bool(requester and requester.email == ADMIN_USER_ID)
+
+    if is_admin_requester:
+        chat = db.query(Chat).filter(Chat.id == chat_id).first()
+    else:
+        chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     
@@ -501,7 +542,15 @@ async def get_chat(chat_id: str, user_id: int, db: Session = Depends(get_db)):
 @app.put("/api/chats/{chat_id}/title")
 async def update_chat_title(chat_id: str, title: str, user_id: int, db: Session = Depends(get_db)):
     """Update chat title"""
-    chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+    # Admin can update any user's chat titles
+    requester = db.query(User).filter(User.id == user_id).first()
+    is_admin_requester = bool(requester and requester.email == ADMIN_USER_ID)
+    
+    if is_admin_requester:
+        chat = db.query(Chat).filter(Chat.id == chat_id).first()
+    else:
+        chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+    
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     
@@ -549,6 +598,7 @@ async def get_shared_chat(share_token: str, db: Session = Depends(get_db)):
     
     return {
         "id": chat.id,
+        "user_id": chat.user_id,
         "title": chat.title,
         "meta_info": chat.meta_info or "",
         "created_at": chat.created_at.isoformat(),
@@ -563,6 +613,205 @@ async def get_shared_chat(share_token: str, db: Session = Depends(get_db)):
             }
             for msg in chat.messages
         ]
+    }
+
+# Admin Endpoints
+ADMIN_USER_ID = "IJIgxK"  # Special admin user ID
+
+def is_admin(user_id: str) -> bool:
+    """Check if user is admin"""
+    return user_id == ADMIN_USER_ID
+
+@app.get("/api/admin/all-chats")
+async def get_all_chats_grouped(user_id: str, db: Session = Depends(get_db)):
+    """Get all chats grouped by user (admin only)"""
+    if not is_admin(user_id):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Get all users who have chats
+    users_with_chats = db.query(User).join(Chat).filter(
+        db.query(Message).filter(Message.chat_id == Chat.id).exists()
+    ).distinct().all()
+    
+    result = []
+    for user in users_with_chats:
+        # Get chats with messages for this user
+        chats = db.query(Chat).filter(Chat.user_id == user.id).all()
+        chats_with_messages = []
+        
+        for chat in chats:
+            messages = db.query(Message).filter(Message.chat_id == chat.id).all()
+            if messages:  # Only include chats with messages
+                # Get last user message time for sorting
+                user_messages = [m for m in messages if m.role == 'user']
+                last_user_msg_time = max([m.created_at for m in user_messages]) if user_messages else chat.created_at
+                
+                chats_with_messages.append({
+                    "id": chat.id,
+                    "title": chat.title,
+                    "message_count": len(messages),
+                    "created_at": chat.created_at.isoformat(),
+                    "updated_at": chat.updated_at.isoformat(),
+                    "last_user_message_time": last_user_msg_time.isoformat(),
+                    "has_survey": any(msg.survey_response for msg in messages)
+                })
+        
+        if chats_with_messages:  # Only include users with chats
+            # Sort chats by last user message time (most recent first)
+            chats_with_messages.sort(key=lambda x: x['last_user_message_time'], reverse=True)
+            
+            result.append({
+                "user_id": user.id,
+                "user_email": user.email,
+                "chats": chats_with_messages
+            })
+    
+    # Sort users by their most recent chat
+    result.sort(key=lambda u: u['chats'][0]['last_user_message_time'] if u['chats'] else '', reverse=True)
+    
+    return {"users": result}
+
+@app.get("/api/admin/stats")
+async def get_admin_stats(user_id: str, db: Session = Depends(get_db)):
+    """Get statistics for admin dashboard"""
+    if not is_admin(user_id):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    from datetime import datetime, timedelta
+    from collections import defaultdict
+    
+    now = datetime.utcnow()
+    one_hour_ago = now - timedelta(hours=1)
+    
+    # Total counts
+    total_users = db.query(User).count()
+    total_chats = db.query(Chat).join(Message).distinct().count()  # Only chats with messages
+    total_messages = db.query(Message).count()
+    
+    # Active users (users with chats in past 1 hour)
+    active_user_ids = db.query(Chat.user_id).filter(
+        Chat.created_at >= one_hour_ago
+    ).distinct().all()
+    active_users = len(active_user_ids)
+    
+    # Survey statistics
+    chats_with_survey = db.query(Chat).join(Message).filter(
+        Message.survey_response.isnot(None)
+    ).distinct().count()
+    
+    # Average statistics
+    avg_messages_per_chat = round(total_messages / total_chats, 1) if total_chats > 0 else 0
+    
+    # Chats by type (repo, bc, normal)
+    repo_chats = db.query(Chat).filter(Chat.meta_info.like('%instance_id%')).count()
+    bc_chats = db.query(Chat).filter(Chat.meta_info.like('%bc_%')).count()
+    normal_chats = total_chats - repo_chats - bc_chats
+    
+    # Hourly statistics (last 24 hours) with multiple metrics
+    hourly_stats = []
+    for i in range(24):
+        hour_start = now - timedelta(hours=23-i)
+        hour_end = hour_start + timedelta(hours=1)
+        
+        # New chats created in this hour
+        new_chats = db.query(Chat).filter(
+            Chat.created_at >= hour_start,
+            Chat.created_at < hour_end
+        ).join(Message).distinct().count()
+        
+        # New surveys submitted in this hour
+        new_surveys = db.query(Message).filter(
+            Message.survey_response.isnot(None),
+            Message.created_at >= hour_start,
+            Message.created_at < hour_end
+        ).count()
+        
+        # Active users in this hour (users who sent messages)
+        active_users_in_hour = db.query(Chat.user_id).join(Message).filter(
+            Message.created_at >= hour_start,
+            Message.created_at < hour_end
+        ).distinct().count()
+        
+        # Messages sent in this hour
+        messages_in_hour = db.query(Message).filter(
+            Message.created_at >= hour_start,
+            Message.created_at < hour_end
+        ).count()
+        
+        hourly_stats.append({
+            "hour": hour_start.strftime("%Y-%m-%d %H:00"),
+            "new_chats": new_chats,
+            "new_surveys": new_surveys,
+            "active_users": active_users_in_hour,
+            "messages": messages_in_hour
+        })
+    
+    # Per-user statistics
+    user_stats = []
+    users = db.query(User).all()
+    for user in users:
+        user_chats = db.query(Chat).filter(Chat.user_id == user.id).join(Message).distinct().all()
+        if not user_chats:  # Skip users with no chats
+            continue
+        
+        user_surveys = db.query(Chat).filter(Chat.user_id == user.id).join(Message).filter(
+            Message.survey_response.isnot(None)
+        ).distinct().count()
+        
+        user_messages = db.query(Message).join(Chat).filter(Chat.user_id == user.id).count()
+        
+        # Recent activity (last 1 hour and last 24 hours) - only count chats with messages
+        recent_chats_1h = db.query(Chat).filter(
+            Chat.user_id == user.id,
+            Chat.created_at >= one_hour_ago
+        ).join(Message).distinct().count()
+        
+        recent_chats_24h = db.query(Chat).filter(
+            Chat.user_id == user.id,
+            Chat.created_at >= now - timedelta(hours=24)
+        ).join(Message).distinct().count()
+        
+        # Recent surveys (last 1 hour and last 24 hours)
+        recent_surveys_1h = db.query(Message).join(Chat).filter(
+            Chat.user_id == user.id,
+            Message.survey_response.isnot(None),
+            Message.created_at >= one_hour_ago
+        ).count()
+        
+        recent_surveys_24h = db.query(Message).join(Chat).filter(
+            Chat.user_id == user.id,
+            Message.survey_response.isnot(None),
+            Message.created_at >= now - timedelta(hours=24)
+        ).count()
+        
+        user_stats.append({
+            "user_id": user.id,
+            "user_email": user.email,
+            "total_chats": len(user_chats),
+            "surveys_submitted": user_surveys,
+            "recent_chats_1h": recent_chats_1h,
+            "recent_chats_24h": recent_chats_24h,
+            "recent_surveys_1h": recent_surveys_1h,
+            "recent_surveys_24h": recent_surveys_24h
+        })
+    
+    # Sort by total chats
+    user_stats.sort(key=lambda x: x['total_chats'], reverse=True)
+    
+    return {
+        "summary": {
+            "total_users": total_users,
+            "active_users": active_users,  # Users with chats in past 1 hour
+            "total_chats": total_chats,
+            "total_messages": total_messages,
+            "chats_with_survey": chats_with_survey,
+            "avg_messages_per_chat": avg_messages_per_chat,
+            "repo_chats": repo_chats,
+            "bc_chats": bc_chats,
+            "normal_chats": normal_chats
+        },
+        "hourly_stats": hourly_stats,
+        "user_stats": user_stats
     }
 
 # Survey Management Endpoints
@@ -811,7 +1060,15 @@ async def submit_inline_survey(
 @app.post("/api/chats/{chat_id}/messages")
 async def add_message(chat_id: str, content: str, role: str, user_id: int, db: Session = Depends(get_db)):
     """Add a message to a chat"""
-    chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+    # Admin can send messages in any user's chats
+    requester = db.query(User).filter(User.id == user_id).first()
+    is_admin_requester = bool(requester and requester.email == ADMIN_USER_ID)
+    
+    if is_admin_requester:
+        chat = db.query(Chat).filter(Chat.id == chat_id).first()
+    else:
+        chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+    
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     
@@ -1204,7 +1461,15 @@ async def run_stream_in_background(stream_state: StreamState, api_url: str, mess
                                 if info_str:
                                     # Update in database
                                     with SessionLocal() as db:
-                                        chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+                                        # Admin can update any user's chats
+                                        requester = db.query(User).filter(User.id == user_id).first()
+                                        is_admin_requester = bool(requester and requester.email == ADMIN_USER_ID)
+                                        
+                                        if is_admin_requester:
+                                            chat = db.query(Chat).filter(Chat.id == chat_id).first()
+                                        else:
+                                            chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+                                        
                                         if chat:
                                             current_meta = chat.meta_info or ""
                                             if len(current_meta) != 0:
@@ -1323,7 +1588,15 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
     # Save user message to database
     try:
         with SessionLocal() as db:
-            chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+            # Admin can send messages in any user's chats
+            requester = db.query(User).filter(User.id == user_id).first()
+            is_admin_requester = bool(requester and requester.email == ADMIN_USER_ID)
+            
+            if is_admin_requester:
+                chat = db.query(Chat).filter(Chat.id == chat_id).first()
+            else:
+                chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+            
             if not chat:
                 await manager.send_personal_message({
                     "type": "error",
@@ -1373,7 +1646,15 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
     chat_meta_info = ""
     try:
         with SessionLocal() as db:
-            chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+            # Admin can access any user's chats
+            requester = db.query(User).filter(User.id == user_id).first()
+            is_admin_requester = bool(requester and requester.email == ADMIN_USER_ID)
+            
+            if is_admin_requester:
+                chat = db.query(Chat).filter(Chat.id == chat_id).first()
+            else:
+                chat = db.query(Chat).filter(Chat.id == chat_id, Chat.user_id == user_id).first()
+            
             if not chat:
                 await manager.send_personal_message({
                     "type": "error",
@@ -1420,6 +1701,23 @@ async def handle_chat_message(websocket: WebSocket, user_id: int, chat_id: str, 
     # Subscribe current websocket to the stream
     # This will send message_start and any accumulated content
     await stream_state.subscribe(websocket)
+    
+    # If message was sent by admin in another user's chat, also subscribe the chat owner
+    try:
+        with SessionLocal() as db:
+            chat = db.query(Chat).filter(Chat.id == chat_id).first()
+            if chat and chat.user_id != user_id:
+                # Admin is sending message in user's chat
+                # Subscribe the chat owner's connections too
+                owner_websockets = manager.user_connections.get(chat.user_id, set())
+                for owner_ws in list(owner_websockets):
+                    try:
+                        print(f"[handle_chat_message] Auto-subscribing chat owner (user_id={chat.user_id}) to stream")
+                        await stream_state.subscribe(owner_ws)
+                    except Exception as e:
+                        print(f"[handle_chat_message] Failed to subscribe chat owner's websocket: {e}")
+    except Exception as e:
+        print(f"[handle_chat_message] Error subscribing chat owner: {e}")
     
     # Note: The background task continues even if the websocket disconnects
     # Other clients can subscribe to see the same stream

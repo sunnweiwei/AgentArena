@@ -59,6 +59,30 @@
   cursor: not-allowed;
 }
 
+.password-input {
+  padding: 14px 16px;
+  border: 1px solid #565869;
+  border-radius: 8px;
+  background: #40414f;
+  color: #ececf1;
+  font-size: 16px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.password-input:focus {
+  border-color: #10a37f;
+}
+
+.password-input::placeholder {
+  color: #8e8ea0;
+}
+
+.password-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .login-button {
   padding: 14px;
   background: #10a37f;

@@ -1,6 +1,10 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // Backend URL - defaults to localhost for local development
 // Can be overridden with BACKEND_URL environment variable
@@ -28,8 +32,34 @@ const httpsConfig = (() => {
   return false
 })()
 
+// Custom plugin to serve PDF at /instruction
+const pdfServePlugin = () => ({
+  name: 'pdf-serve',
+  configureServer(server) {
+    server.middlewares.use((req, res, next) => {
+      if (req.url === '/instruction') {
+        const pdfPath = path.join(__dirname, 'public', 'instruction.pdf')
+        
+        fs.readFile(pdfPath, (err, data) => {
+          if (err) {
+            console.error('Error reading PDF:', err)
+            res.statusCode = 404
+            res.end('PDF not found')
+          } else {
+            res.setHeader('Content-Type', 'application/pdf')
+            res.setHeader('Content-Disposition', 'inline; filename="instruction.pdf"')
+            res.end(data)
+          }
+        })
+      } else {
+        next()
+      }
+    })
+  }
+})
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [pdfServePlugin(), react()],
   server: {
     port: 3000,
     host: '0.0.0.0',

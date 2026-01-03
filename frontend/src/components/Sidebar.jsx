@@ -8,6 +8,9 @@ const Sidebar = ({
   pendingChats = {},
   onSelectChat, 
   onCreateChat, 
+  onOpenDashboard,
+  dashboardLabel,
+  dashboardActive = false,
   onLogout, 
   user,
   isOpen,
@@ -53,6 +56,20 @@ const Sidebar = ({
           >
             <span>+</span> New Chat
           </button>
+
+          {onOpenDashboard && (
+            <button
+              className={`new-chat-button dashboard-button ${dashboardActive ? 'active' : ''}`}
+              onClick={() => {
+                if (isLocked) return
+                onOpenDashboard?.()
+              }}
+              disabled={isLocked}
+              title="Open admin dashboard"
+            >
+              <span>□</span> Dashboard
+            </button>
+          )}
         </div>
 
         {/* Main content area - chat list or settings panel */}
@@ -74,11 +91,58 @@ const Sidebar = ({
             </div>
           ) : (
             chats.map(chat => {
+              if (chat?.kind === 'group') {
+                return (
+                  <div key={chat.id} className="chat-section">
+                    <div className="chat-section-header">
+                      {chat.title}
+                    </div>
+                    <div className="chat-section-body">
+                      {(chat.chats || []).map(child => {
+                        const isPending = Boolean(pendingChats?.[child.id])
+                        return (
+                          <div
+                            key={child.id}
+                            className={`chat-item indent ${child.id === currentChatId ? 'active' : ''} ${animatingChatId === child.id ? 'moving-to-top' : ''} ${isPending ? 'pending' : ''}`}
+                            onClick={() => {
+                              if (isLocked) return
+                              onSelectChat(child.id)
+                            }}
+                          >
+                            <div className="chat-item-content">
+                              <div className="chat-title-row">
+                                <div className="chat-title">{child.title}</div>
+                                {isPending && (
+                                  <div className="chat-pending-indicator" title="Assistant response in progress">
+                                    <span></span>
+                                    <span></span>
+                                    <span></span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              }
+
+              if (chat?.kind === 'header') {
+                return (
+                  <div key={chat.id} className="chat-section-header">
+                    {chat.title}
+                  </div>
+                )
+              }
+
+              const isAction = chat?.kind === 'action'
               const isPending = Boolean(pendingChats?.[chat.id])
               return (
               <div
                 key={chat.id}
-                  className={`chat-item ${chat.id === currentChatId ? 'active' : ''} ${animatingChatId === chat.id ? 'moving-to-top' : ''} ${isPending ? 'pending' : ''}`}
+                  className={`chat-item ${chat.id === currentChatId ? 'active' : ''} ${animatingChatId === chat.id ? 'moving-to-top' : ''} ${isPending ? 'pending' : ''} ${chat?.indent ? 'indent' : ''} ${isAction ? 'action' : ''}`}
                 onClick={() => {
                   if (isLocked) return
                   onSelectChat(chat.id)

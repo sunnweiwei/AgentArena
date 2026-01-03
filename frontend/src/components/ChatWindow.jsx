@@ -9,10 +9,27 @@ import './ChatWindow.css'
 
 const isDev = import.meta.env.DEV
 
+// Preserve indentation by replacing leading whitespace with non-breaking spaces
+const preserveIndentation = (text) => {
+  if (!text) return text
+  return text.split('\n').map(line => {
+    // Count leading tabs and spaces
+    const match = line.match(/^([\t ]+)/)
+    if (match) {
+      const leadingWs = match[1]
+      // Replace tabs with 4 non-breaking spaces, regular spaces with non-breaking spaces
+      const preserved = leadingWs.replace(/\t/g, '\u00A0\u00A0\u00A0\u00A0').replace(/ /g, '\u00A0')
+      return preserved + line.slice(leadingWs.length)
+    }
+    return line
+  }).join('\n')
+}
+
 // Canvas display component - shows the last canvas content from messages
 const CanvasDisplay = ({ messages }) => {
   const canvasContent = useMemo(() => {
-    return getLastCanvasContent(messages)
+    const content = getLastCanvasContent(messages)
+    return preserveIndentation(content)
   }, [messages])
 
   if (!canvasContent) {
@@ -1393,11 +1410,12 @@ const ChatWindow = ({
     }
   }, [chatId, isStreaming])
 
-  const handleLogin = async (username) => {
+  const handleLogin = async (username, password = '') => {
     if (!username || !username.trim()) return
     try {
       const response = await axios.post('/api/auth/login', {
-        email: username.trim()
+        email: username.trim(),
+        password: password || undefined
       })
       if (response.data && response.data.user_id) {
         onLogin(response.data)
@@ -1406,6 +1424,8 @@ const ChatWindow = ({
       }
     } catch (err) {
       console.error('Login failed:', err)
+      // Show error message to user
+      alert(err.response?.data?.detail || 'Login failed. Please try again.')
     }
   }
 
@@ -1503,21 +1523,42 @@ const ChatWindow = ({
               <div className="login-input-wrapper">
                 <input
                   type="text"
-                  placeholder="Enter username"
+                  placeholder="Username"
                   className="login-input-inline"
+                  id="login-username-input"
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && e.target.value.trim()) {
-                      handleLogin(e.target.value)
+                    if (e.key === 'Enter') {
+                      // Move to password field
+                      const passwordInput = document.getElementById('login-password-input')
+                      if (passwordInput) {
+                        passwordInput.focus()
+                      }
                     }
                   }}
                   autoFocus
                 />
+                <input
+                  type="password"
+                  placeholder="Password"
+                  className="login-input-inline"
+                  id="login-password-input"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const usernameInput = document.getElementById('login-username-input')
+                      const passwordInput = document.getElementById('login-password-input')
+                      if (usernameInput && usernameInput.value.trim()) {
+                        handleLogin(usernameInput.value, passwordInput.value)
+                      }
+                    }
+                  }}
+                />
                 <button
                   className="login-button-inline"
                   onClick={(e) => {
-                    const input = e.target.previousElementSibling
-                    if (input && input.value.trim()) {
-                      handleLogin(input.value)
+                    const usernameInput = document.getElementById('login-username-input')
+                    const passwordInput = document.getElementById('login-password-input')
+                    if (usernameInput && usernameInput.value.trim()) {
+                      handleLogin(usernameInput.value, passwordInput ? passwordInput.value : '')
                     }
                   }}
                 >

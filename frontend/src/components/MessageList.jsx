@@ -95,9 +95,9 @@ const MessageList = ({ messages, onScrollToBottom, onSurveySubmit }) => {
       ) : (
         <>
           {messages.map((message, index) => {
-            // Check if message contains agent markup (think/tool/highlight/survey tags) - only for assistant messages
+            // Check if message contains agent markup (think/tool/highlight/survey/note tags) - only for assistant messages
             const hasAgentMarkup = message.role === 'assistant' && message.content &&
-              (message.content.includes('<|think|>') || message.content.includes('<|tool|>') || message.content.includes('<|highlight|>') || message.content.includes('<|survey|>') || message.content.includes('<|survey-response|>'))
+              (message.content.includes('<|think|>') || message.content.includes('<|tool|>') || message.content.includes('<|highlight|>') || message.content.includes('<|survey|>') || message.content.includes('<|survey-response|>') || message.content.includes('<|note|>'))
 
             // For assistant messages, use pre-processed display content if available (avoids flashing)
             // Otherwise extract canvas content on the fly (for older messages from DB)
