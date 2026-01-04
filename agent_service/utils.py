@@ -714,6 +714,7 @@ def swe_context_summarize(conversation, openai_client):
         response = openai_client.responses.create(
             model='gpt-5-mini',
             input=conversation,
+            reasoning={"effort": "low"},
         )
         answer = ""
         for item in response.output:

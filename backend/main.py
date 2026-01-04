@@ -1037,7 +1037,7 @@ async def submit_inline_survey(
     share_message = Message(
         chat_id=submission.chat_id,
         role='assistant',
-        content=f"<|highlight|>✅ Survey submitted!\n\nShare this chat: {full_share_url}<|/highlight|>"
+        content=f"<|highlight|>✅ Survey submitted!\n\nconfirmation_link: {full_share_url}\n\nPlease copy this link to the registration form to mark this as complete.\n\nProlific confirmation code: C1MRRDL3<|/highlight|>"
     )
     db.add(share_message)
     

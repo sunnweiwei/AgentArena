@@ -195,8 +195,8 @@ OSS_PREFERENCE = [
     },
     {
         'name': 'answer_more',
-        'preference': 'The user prefer the agent to ask more questions. The agent should ask minimal of 3 questions.',
-        'reward': 'If the agent ask more than 3 questions, the user is feel satisfied; otherwise, the user is feel unsatisfied'
+        'preference': 'The user prefer the agent to ask questions. The agent should ask minimal of 2 questions.',
+        'reward': 'If the agent ask 2 or more questions, the user is feel satisfied; otherwise, the user is feel unsatisfied'
     },
 ]
 
@@ -382,7 +382,7 @@ def get_user_prompt(problem_statement, instance_id, be_fast=False):
     return in_context_prefix + user_prompt + in_context_suffix
 
 
-def get_survey():
+def get_survey(preference=None):
     import json
 
     survey = {
@@ -436,7 +436,7 @@ def get_survey():
                 "id": "preference_align",
                 "type": "select",
                 "question": "Did the agent follow the given preference for how it should ask questions?",
-                "description": "Compare the agent’s question with the predefined preference and determine whether it follows the requirement of the preference.",
+                "description": f"Compare the agent’s question with the predefined preference and determine whether it follows the requirement of the preference. The user preference is: {preference}",
                 "options": ["Not applicable", "No", "Partially", "Yes"],
             },
             {
@@ -640,7 +640,7 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
             yield f"```diff\n{patch_result}\n```"
         except RuntimeServiceError as e:
             pass
-        yield get_survey()
+        yield get_survey(OSS_PREFERENCE[int(hashlib.md5(instance_id.encode()).hexdigest(), 16) % len(OSS_PREFERENCE)]['reward'])
         return
 
     if last_content == '\\reward' or last_content == '/reward' or '###STOP###' in last_content:
@@ -668,9 +668,9 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
 
     openai_client = call_openai()
     vllm_config = {
-        # 'seed-oss-36b': {'url': 'http://sf.lti.cs.cmu.edu:8123/v1/chat/completions', 'model': 'Seed-OSS-36B-Instruct', 'thinking_budget': 0},
-        'seed-oss-36b': {'url': 'http://sf.lti.cs.cmu.edu:8998/v1/chat/completions', 'model': 'seed-oss-36b-instruct', 'thinking_budget': 0},
-        'ppp-36b': {'url': 'http://sf.lti.cs.cmu.edu:9999/v1/chat/completions', 'model': 'seed-oss-36b-instruct-w', 'thinking_budget': -1}
+        # 'seed-oss-36b': {'url': 'http://sf.lti.cs.cmu.edu:8123/v1/chat/completions', 'model': 'Seed-OSS-36B-Instruct'},
+        'seed-oss-36b': {'url': 'http://sf.lti.cs.cmu.edu:8997/v1/chat/completions', 'model': 'Seed-OSS-36B-Instruct'},
+        'ppp-36b': {'url': 'http://sf.lti.cs.cmu.edu:9999/v1/chat/completions', 'model': 'seed-oss-36b-instruct-w'}
     }
 
     for iteration in range(64):
@@ -684,12 +684,12 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
                 cancel_event = threading.Event()
                 result_queue = queue.Queue()
 
-                if model in ['seed-oss-36b'] and get_context_length(chat) > 30_000:
-                    yield '<|note|>Summarizing conversation...<|/note|>'
-                    chat = swe_context_summarize(chat, openai_client)
-                    yield '<|note|>Conversation summarized<|/note|>'
-                    yield f'<|think|>{chat[-1]["content"]}<|/think|>'
-                    continue
+                # if model in ['seed-oss-36b'] and get_context_length(chat) > 40_000:
+                #     yield '<|note|>Summarizing conversation...<|/note|>'
+                #     chat = swe_context_summarize(chat, openai_client)
+                #     yield '<|note|>Conversation summarized<|/note|>'
+                #     yield f'<|think|>{chat[-1]["content"]}<|/think|>'
+                #     continue
 
                 def make_request_with_retry():
                     for attempt in range(2):
@@ -705,11 +705,6 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
                                 'messages': chat,
                                 'max_tokens': max_tokens,
                                 'temperature': 1.0,
-                                'extra_body': {
-                                    'chat_template_kwargs': {
-                                        'thinking_budget': vllm_config[model]['thinking_budget']
-                                    }
-                                }
                             }, timeout=120))
                         except requests.exceptions.Timeout:
                             if attempt < 2 and not cancel_event.is_set():

@@ -37,8 +37,8 @@ const pdfServePlugin = () => ({
   name: 'pdf-serve',
   configureServer(server) {
     server.middlewares.use((req, res, next) => {
-      if (req.url === '/instruction') {
-        const pdfPath = path.join(__dirname, 'public', 'instruction.pdf')
+      if (req.url === '/instruction' || req.url.startsWith('/instruction?')) {
+        const pdfPath = path.join(__dirname, 'public', 'Instruction.pdf')
         
         fs.readFile(pdfPath, (err, data) => {
           if (err) {
@@ -47,7 +47,10 @@ const pdfServePlugin = () => ({
             res.end('PDF not found')
           } else {
             res.setHeader('Content-Type', 'application/pdf')
-            res.setHeader('Content-Disposition', 'inline; filename="instruction.pdf"')
+            res.setHeader('Content-Disposition', 'inline; filename="Instruction.pdf"')
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+            res.setHeader('Pragma', 'no-cache')
+            res.setHeader('Expires', '0')
             res.end(data)
           }
         })
