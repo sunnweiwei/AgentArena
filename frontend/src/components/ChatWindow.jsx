@@ -27,9 +27,32 @@ const preserveIndentation = (text) => {
 
 // Canvas display component - shows the last canvas content from messages
 const CanvasDisplay = ({ messages }) => {
-  const canvasContent = useMemo(() => {
-    const content = getLastCanvasContent(messages)
-    return preserveIndentation(content)
+  const [canvasContent, setCanvasContent] = useState('')
+  const updateTimerRef = useRef(null)
+  
+  useEffect(() => {
+    // Throttle canvas updates during streaming to avoid expensive re-renders
+    const newContent = getLastCanvasContent(messages)
+    
+    if (updateTimerRef.current) {
+      clearTimeout(updateTimerRef.current)
+    }
+    
+    // Only throttle if content is large (>1000 chars) to avoid delay for small content
+    if (newContent && newContent.length > 1000) {
+      updateTimerRef.current = setTimeout(() => {
+        setCanvasContent(preserveIndentation(newContent))
+        updateTimerRef.current = null
+      }, 150)  // 150ms throttle
+    } else {
+      setCanvasContent(preserveIndentation(newContent))
+    }
+    
+    return () => {
+      if (updateTimerRef.current) {
+        clearTimeout(updateTimerRef.current)
+      }
+    }
   }, [messages])
 
   if (!canvasContent) {

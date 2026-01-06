@@ -596,13 +596,22 @@ async def get_shared_chat(share_token: str, db: Session = Depends(get_db)):
     if not chat:
         raise HTTPException(status_code=404, detail="Shared chat not found")
     
+    # Get user info
+    user = db.query(User).filter(User.id == chat.user_id).first()
+    username = user.email if user else "Unknown"
+    
+    # Check if any message has a survey response
+    has_survey = any(msg.survey_response for msg in chat.messages)
+    
     return {
         "id": chat.id,
         "user_id": chat.user_id,
+        "username": username,
         "title": chat.title,
         "meta_info": chat.meta_info or "",
         "created_at": chat.created_at.isoformat(),
         "updated_at": chat.updated_at.isoformat(),
+        "has_survey_submitted": has_survey,
         "messages": [
             {
                 "id": msg.id,
@@ -1014,8 +1023,19 @@ async def submit_inline_survey(
     import json
     import secrets
     
-    # Validate chat belongs to user
-    chat = db.query(Chat).filter(Chat.id == submission.chat_id, Chat.user_id == submission.user_id).first()
+    # Get user to check if admin
+    user = db.query(User).filter(User.id == submission.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Validate chat belongs to user (or allow admin to submit for any chat)
+    if is_admin(user.email):
+        # Admin can submit survey for any chat
+        chat = db.query(Chat).filter(Chat.id == submission.chat_id).first()
+    else:
+        # Regular user can only submit for their own chats
+        chat = db.query(Chat).filter(Chat.id == submission.chat_id, Chat.user_id == submission.user_id).first()
+    
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     
@@ -1037,7 +1057,7 @@ async def submit_inline_survey(
     share_message = Message(
         chat_id=submission.chat_id,
         role='assistant',
-        content=f"<|highlight|>✅ Survey submitted!\n\nconfirmation_link: {full_share_url}\n\nPlease copy this link to the registration form to mark this as complete.\n\nProlific confirmation code: C1MRRDL3<|/highlight|>"
+        content=f"<|highlight|>✅ Survey submitted!\n\nconfirmation_link: {full_share_url}\n\nPlease copy this link to the registration form to mark this as complete.\n\nIf your task is (round 3), prolific completion code is CQ84XHAB\nIf your task is (Cs Only), prolific completion code is CKW7L7TD<|/highlight|>"
     )
     db.add(share_message)
     

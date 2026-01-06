@@ -373,7 +373,8 @@ def get_user_prompt(problem_statement, instance_id, be_fast=False):
         f"4. VERIFICATION: Review your changes by reading the modified files to ensure they are correct\n\n"
         f"You do not need to write any test or run any test. Just implement the fix and finish the task.\n\n"
         f"{speed}"
-        f"User issues are sometimes vague or underspecified, for example, the question is short and lack details. So you need to use the ask_question tool to request clarification to ensure your work is correct. Only ask key questions that can address the blocker.\n\n"
+        f"<IMPORTANT> User issues are sometimes vague or underspecified, for example, the question is short and lack details. So you need to use the ask_question tool to request clarification to ensure your work is correct. "
+        f"Only ask key questions that can address the blocker. Do not ask consecutive questions, and if the user has just answered a question, do not immediately ask the next question. Don't ask similar questions, make sure the questions are sufficiently different. Do not ask more than 3 questions.\n\n"
         f"For example:\n<function=ask_question><parameter=query>your question, must in English and be clear, and specific</parameter></function>\n\nDo not ask questions at the beginning. Communicating with user with good kill. Proactively ask using ask_question tool, but avoid ask too many question. Never ask multiple similar questions. If you need further clarification, explain clearly what you need.\n\n"
         f"The user’s preference for the agent is: {preference}\n\nYou must ensure that your questions follow the user’s preference. If you ask questions that are not aligned with the user’s preference, you will be penalized.\n\n"
         f"Ensure your questions align with the user’s preferences and are easy for the user to answer. You will be rewarded for asking good, targeted questions when the user’s query is unclear, and penalized for asking poor questions, such as questions the user cannot easily answer or questions that do not address key blockers.\n\n"
@@ -669,9 +670,12 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
     openai_client = call_openai()
     vllm_config = {
         # 'seed-oss-36b': {'url': 'http://sf.lti.cs.cmu.edu:8123/v1/chat/completions', 'model': 'Seed-OSS-36B-Instruct'},
-        'seed-oss-36b': {'url': 'http://sf.lti.cs.cmu.edu:8997/v1/chat/completions', 'model': 'Seed-OSS-36B-Instruct'},
+        'seed-oss-36b': {'url': 'http://sf.lti.cs.cmu.edu:8998/v1/chat/completions', 'model': 'seed-oss-36b-instruct'},
         'ppp-36b': {'url': 'http://sf.lti.cs.cmu.edu:9999/v1/chat/completions', 'model': 'seed-oss-36b-instruct-w'}
     }
+
+    hack_empty_tool = 0
+    block_ask = 0
 
     for iteration in range(64):
         # Check for cancellation before each API call
@@ -809,6 +813,13 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
 
         if len(reasoning) > 0:
             yield '<|think|>' + reasoning + '<|/think|>'
+
+        if  "<function=ask_question" in answer and len(chat) > 3 and "<function=ask_question" in chat[-3]['content']:
+            if block_ask < 1:
+                block_ask += 1
+                chat.append({'role': 'user', 'content': 'The user has just answered your question, but now you asked another question. Read the user’s answer carefully. Try to work independently first! Ask question only when it’s crucial, and make sure new question is significantly different to previous one.'})
+                continue
+
         yield answer
 
         # Check for cancellation before tool execution
@@ -826,19 +837,12 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
             yield '<|tool|>' + observation + '<|/tool|>'
             continue  # Let agent try again with correct format
 
-        finish_message = None
         if fn_call is not None and isinstance(fn_call, list) and len(fn_call) > 0:
             try:
                 # Deduplicate tool calls - avoid running the same call multiple times
                 seen_calls = set()
                 unique_fn_calls = []
                 for single_fn in fn_call:
-                    if single_fn['name'] == 'ask_question':
-                        question_to_ask = single_fn.get('arguments', {}).get('query')
-                        question_to_ask = call_openai(
-                            f"Repeat this question with no other words. Output in pure English; if it contains any non-English words, convert them to English. You can improve the formatting in Markdown to make it easier to read, but do not change the content.\n\n{question_to_ask}")
-                        yield f"<|highlight|>{clean_markdown(question_to_ask.strip())}<|/highlight|>"
-                        return
                     # Create a unique key based on function name and arguments
                     call_key = json.dumps({'name': single_fn['name'], 'arguments': single_fn.get('arguments', {})},
                                           sort_keys=True)
@@ -849,10 +853,20 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
                 # Execute each unique tool call one by one and collect results
                 observations = []
                 for single_fn in unique_fn_calls:
-                    obs = repo_env.step(fn_call_to_text(single_fn), conversation=chat)
-                    observations.append(obs)
-                    if single_fn['name'] == 'finish':
+                    if single_fn['name'] == 'ask_question':
+                        question_to_ask = single_fn.get('arguments', {}).get('query')
+                        question_to_ask = call_openai(
+                            f"Repeat the following question with no other words. Output in pure English; if it contains any non-English words, convert them to English. You can improve the formatting in Markdown to make it easier to read, but do not change the content:\n\nquestion: {question_to_ask}")
+                        yield f"<|highlight|>{clean_markdown(question_to_ask.strip())}<|/highlight|>"
+                        return
+                    elif single_fn['name'] == 'finish':
                         finish_message = single_fn['arguments'].get('message', 'finish')
+                        yield f"<|highlight|>{finish_message}<|/highlight|>"
+                        yield f"<|highlight|>Agent has finished its work. You can send `/patch` to view the patch generated by the agent. For reference, a **golden patch** is provided in the instructions. Please compare them and check whether the agent’s work is correct.\n\nYou can ask follow-up questions to the agent, for example, to make further edits to improve the solution or to explain its changes. When you believe the problem has resolved, send `/stop` to end the conversation.<|/highlight|>"
+                        return
+                    else:
+                        obs = repo_env.step(fn_call_to_text(single_fn), conversation=chat)
+                    observations.append(obs)
 
                 # Concatenate all observations
                 if len(observations) == 1:
@@ -869,15 +883,13 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
                 observation = f"Error executing tool: {e}"
 
         if observation is None:
-            return
-            # observation = "No function call was detected. You must immediately call a tool (execute_bash, str_replace_editor, think, or finish) to continue working on the repository. Do not ask for confirmation - proceed directly with your next tool call. Use finish tool when the task is complete."
+            if hack_empty_tool > 0 and len(answer.strip()) > 0:
+                return
+            hack_empty_tool += 1
+            observation = "No function call was detected. You must call a tool (execute_bash, str_replace_editor, think, ask_question, or finish) to continue working on the repository. Use finish tool when the task is complete."
         yield '<|tool|>' + observation + '<|/tool|>'
         chat.append({'role': 'user', 'content': observation})
-        # Check if task is finished
-        if observation and ('Task finished' in str(observation) or observation == 'finish') and finish_message:
-            yield f"<|highlight|>{finish_message}<|/highlight|>"
-            yield f"<|highlight|>Agent has finished its work. You can send `/patch` to view the patch generated by the agent. For reference, a **golden patch** is provided in the instructions. Please compare them and check whether the agent’s work is correct.\n\nYou can ask follow-up questions to the agent, for example, to make further edits to improve the solution or to explain its changes. When you believe the problem has resolved, send `/stop` to end the conversation.<|/highlight|>"
-            break
+
     return
 
 # runtime_id, meta_info = create_env()

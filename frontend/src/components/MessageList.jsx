@@ -110,7 +110,7 @@ const MessageList = ({ messages, onScrollToBottom, onSurveySubmit }) => {
 
             // Determine loading state: show skeleton only if no content yet
             // Check _displayContent first (for streaming messages), fall back to content
-            const contentToCheck = message._displayContent || message.content
+            const contentToCheck = message._displayContent !== undefined ? message._displayContent : message.content
             const hasContent = contentToCheck && contentToCheck.trim().length > 0
             // Priority: if has content, never show skeleton, only inline loading
             const showSkeleton = !hasContent && (message.isLoading || message.isStreaming)
