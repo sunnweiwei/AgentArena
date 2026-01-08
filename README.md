@@ -227,13 +227,13 @@ cd backend && uv run --env-file=.env python main.py
 cd agent_service && uv run --env-file=.env python agent_main.py
 
 # Runtime Service
-cd runtime_service && export OPENAI_API_KEY=$(cat ../openaikey) && uv run python runtime_server.py
+cd runtime_service && uv run --env-file=.env python runtime_server.py
 
 # BC Server (example specific server)
-cd runtime_service && python bc_server.py --host 0.0.0.0 --port 8010
+cd runtime_service && uv run --env-file=.env python bc_server.py --host 0.0.0.0 --port 8010
 
 # Repo Server
-cd runtime_service && python repo_server.py
+cd runtime_service && uv run --env-file=.env python repo_server.py
 
 # Frontend
 cd frontend && npm run dev

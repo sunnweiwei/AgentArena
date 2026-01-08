@@ -4,23 +4,13 @@ import requests
 import json
 from openai import OpenAI
 
-RUNTIME_SERVICE_URL = os.getenv("RUNTIME_SERVICE_URL", "http://sf.lti.cs.cmu.edu:8005")
-
+BASE_DOMAIN = os.getenv("BASE_DOMAIN", "localhost")
+RUNTIME_SERVICE_URL = os.getenv("RUNTIME_SERVICE_URL", f"http://{BASE_DOMAIN}:8005")
 
 def call_openai(prompt=None):
     OPENAI_API_KEY = None
     try:
-        key_path = os.path.join(os.path.dirname(__file__), '..', '..', 'openaikey')
-        if os.path.exists(key_path):
-            with open(key_path, 'r') as f:
-                OPENAI_API_KEY = f.read().strip()
-        elif os.getenv('OPENAI_API_KEY'):
-            OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-        else:
-            key_path = '/usr1/data/weiweis/chat_server/openaikey'
-            if os.path.exists(key_path):
-                with open(key_path, 'r') as f:
-                    OPENAI_API_KEY = f.read().strip()
+        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     except Exception as e:
         print(f"Warning: Could not load OpenAI API key: {e}")
 

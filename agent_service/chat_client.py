@@ -26,14 +26,16 @@ import queue
 import time
 from contextlib import contextmanager
 from typing import Iterator, Optional, Dict, Any
+import os
 
+BASE_DOMAIN = os.getenv("BASE_DOMAIN", "localhost")
 
 class ChatSession:
     """A chat session for a specific user."""
     
     def __init__(self, username: str, password: str = "", 
-                 backend_url: str = "http://sf.lti.cs.cmu.edu:8000",
-                 ws_url: str = "ws://sf.lti.cs.cmu.edu:8000"):
+                 backend_url: str = f"http://{BASE_DOMAIN}:8000",
+                 ws_url: str = f"ws://{BASE_DOMAIN}:8000"):
         self.username = username
         self.password = password
         self.backend_url = backend_url.rstrip('/')
@@ -356,8 +358,8 @@ class ChatSession:
 
 @contextmanager
 def chat(username: str, password: str = "", 
-         backend_url: str = "http://sf.lti.cs.cmu.edu:8000",
-         ws_url: str = "ws://sf.lti.cs.cmu.edu:8000"):
+         backend_url: str = f"http://{BASE_DOMAIN}:8000",
+         ws_url: str = f"ws://{BASE_DOMAIN}:8000"):
     """
     Context manager for creating a chat session.
     

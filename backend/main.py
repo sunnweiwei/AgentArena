@@ -17,6 +17,8 @@ import aiohttp
 import json
 from stream_manager import StreamManager, StreamState
 
+BASE_DOMAIN = os.getenv("BASE_DOMAIN", "localhost")
+
 stream_manager = StreamManager()
 
 # Database setup with connection pooling
@@ -141,7 +143,7 @@ else:
 TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "gpt-4o-transcribe")
 
 # Agent service URL - all models go through agent service
-AGENT_SERVICE_URL = os.getenv("AGENT_SERVICE_URL", "http://sf.lti.cs.cmu.edu:8001")
+AGENT_SERVICE_URL = os.getenv("AGENT_SERVICE_URL", f"http://{BASE_DOMAIN}:8001")
 
 # Survey configuration
 SURVEY_MODE = os.getenv("SURVEY_MODE", "optional")  # "optional", "mandatory", or "disabled"
@@ -240,10 +242,10 @@ else:
     allowed_origins = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "http://sf.lti.cs.cmu.edu:3000",
-        "https://sf.lti.cs.cmu.edu:3443",
-        "http://sf.lti.cs.cmu.edu",
-        "https://sf.lti.cs.cmu.edu",
+        "http://{BASE_DOMAIN}:3000",
+        "https://{BASE_DOMAIN}:3443",
+        "http://{BASE_DOMAIN}",
+        "https://{BASE_DOMAIN}",
         "http://localhost:4173"
     ]
     # For cloud hosting: allow all origins (frontend on different server)
@@ -1053,7 +1055,7 @@ async def submit_inline_survey(
     
     # Create share link message with highlight formatting
     share_url = f"/chat?share={chat.share_token}"
-    full_share_url = f"http://sf.lti.cs.cmu.edu:3000{share_url}"
+    full_share_url = f"http://{BASE_DOMAIN}:3000{share_url}"
     share_message = Message(
         chat_id=submission.chat_id,
         role='assistant',

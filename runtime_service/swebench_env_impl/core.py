@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import random
-
+BASE_DOMAIN = os.getenv("BASE_DOMAIN", "localhost")
 def _start_interactive_human_api_service(port: int = 8007) -> subprocess.Popen:
     """
     Start an interactive human API service that allows human input for SWE-bench tasks.
@@ -72,7 +72,7 @@ def _start_interactive_human_api_service(port: int = 8007) -> subprocess.Popen:
         raise RuntimeError(f"Failed to start interactive human API service: {e}")
 
 
-def create_interactive_llm_config(interactive_api_url: str = "http://sf.lti.cs.cmu.edu:8007") -> dict:
+def create_interactive_llm_config(interactive_api_url: str = f"http://{BASE_DOMAIN}:8007") -> dict:
     """
     Create an LLM config that points to the interactive human API service.
     
@@ -147,7 +147,7 @@ class SweBenchInteractiveEnv:
         
         # Set interactive API URL
         self.interactive_api_url = os.getenv(
-            "INTERACTIVE_API_URL", f"http://sf.lti.cs.cmu.edu:{self.interactive_api_port}"
+            "INTERACTIVE_API_URL", f"http://{BASE_DOMAIN}:{self.interactive_api_port}"
         )
         
         # Create LLM config file pointing to interactive service
