@@ -11,9 +11,28 @@ const httpProxy = require('http-proxy');
 const fs = require('fs');
 const path = require('path');
 
+// Load BASE_DOMAIN from .env file if it exists (server-side only, not exposed to client)
+// Only load BASE_DOMAIN specifically for security - don't load all env vars
+let BASE_DOMAIN = process.env.BASE_DOMAIN || 'localhost';
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, 'utf8');
+  envContent.split('\n').forEach(line => {
+    const trimmedLine = line.trim();
+    // Skip empty lines and comments
+    if (trimmedLine && !trimmedLine.startsWith('#') && trimmedLine.startsWith('BASE_DOMAIN=')) {
+      const [key, ...valueParts] = trimmedLine.split('=');
+      if (key === 'BASE_DOMAIN' && valueParts.length > 0) {
+        // Remove quotes if present
+        const value = valueParts.join('=').trim().replace(/^["']|["']$/g, '');
+        BASE_DOMAIN = value;
+      }
+    }
+  });
+}
+
 const HTTP_PORT = 3000;
 const HTTPS_PORT = 3443;
-
 const certPath = '/usr1/data/weiweis/chat_server/certs/server.crt';
 const keyPath = '/usr1/data/weiweis/chat_server/certs/server.key';
 
@@ -32,11 +51,20 @@ if (hasCert) {
 }
 
 // Start Vite dev server on HTTP port 3000
+// Only pass VITE_ prefixed env vars to Vite (client-safe) plus ENABLE_HTTPS
+// Don't pass all process.env for security
+const viteEnv = { ENABLE_HTTPS: 'false' };
+Object.keys(process.env).forEach(key => {
+  if (key.startsWith('VITE_')) {
+    viteEnv[key] = process.env[key];
+  }
+});
+
 console.log('🚀 Starting Vite dev server on HTTP port', HTTP_PORT);
 const vite = spawn('npx', ['vite', '--port', HTTP_PORT, '--host', '0.0.0.0'], {
   stdio: 'inherit',
   shell: true,
-  env: { ...process.env, ENABLE_HTTPS: 'false' }
+  env: viteEnv
 });
 
 vite.on('error', (err) => {
@@ -67,8 +95,8 @@ setTimeout(() => {
     httpsServer.listen(HTTPS_PORT, '0.0.0.0', () => {
       console.log('');
       console.log('✅ Servers started successfully!');
-      console.log(`   HTTP:  http://sf.lti.cs.cmu.edu:${HTTP_PORT}`);
-      console.log(`   HTTPS: https://sf.lti.cs.cmu.edu:${HTTPS_PORT}`);
+      console.log(`   HTTP:  http://${BASE_DOMAIN}:${HTTP_PORT}`);
+      console.log(`   HTTPS: https://${BASE_DOMAIN}:${HTTPS_PORT}`);
       console.log('');
     });
 
@@ -78,7 +106,7 @@ setTimeout(() => {
   } else {
     console.log('');
     console.log('✅ HTTP server started!');
-    console.log(`   HTTP:  http://sf.lti.cs.cmu.edu:${HTTP_PORT}`);
+    console.log(`   HTTP:  http://${BASE_DOMAIN}:${HTTP_PORT}`);
     console.log('   (HTTPS not available - no certificates found)');
     console.log('');
   }
