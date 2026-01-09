@@ -123,7 +123,7 @@ def agent_loop(conversation, cancel_event=None, meta_info="", user_id=None, mcp_
             return
 
         response = openai_client.responses.create(
-            model='gpt-5-mini',
+            model='gpt-5-2025-08-07',
             input=chat,
             reasoning={'summary': 'detailed', "effort": "low"}
         )

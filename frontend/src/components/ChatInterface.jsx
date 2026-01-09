@@ -22,7 +22,9 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
   const [adminStats, setAdminStats] = useState(null) // For admin: statistics data
   const [sidebarOpen, setSidebarOpen] = useState(false) // Closed by default
   const canUseChat = Boolean(user && user.user_id)
-  const isAdmin = user?.email === 'IJIgxK'
+  // Check if user is admin using environment variable
+  const adminEmails = (import.meta.env.VITE_ADMIN_EMAILS || import.meta.env.VITE_REACT_APP_ADMIN_EMAILS || '').split(',').map(e => e.trim()).filter(Boolean)
+  const isAdmin = user?.email && adminEmails.includes(user.email.trim())
 
   // Auto-open sidebar for admin users
   useEffect(() => {

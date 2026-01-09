@@ -1,0 +1,226 @@
+.annotation-survey {
+  padding: 0;
+}
+
+.survey-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 25px;
+}
+
+.survey-question {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.question-label {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.question-number {
+  font-weight: 700;
+  color: var(--text-color, #000000);
+  min-width: 24px;
+}
+
+.question-text {
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--text-color, #000000);
+  margin-bottom: 4px;
+}
+
+.question-description {
+  font-size: 13px;
+  color: var(--text-color-secondary, #6b7280);
+  margin-top: 4px;
+}
+
+.likert-scale {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.likert-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 2px solid var(--border-color, #e5e7eb);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  min-width: 50px;
+}
+
+.likert-option:hover {
+  border-color: #4f46e5;
+  background: rgba(79, 70, 229, 0.05);
+}
+
+.likert-option.checked {
+  border-color: #4f46e5;
+  background: rgba(79, 70, 229, 0.1);
+}
+
+.likert-option input[type="radio"] {
+  margin: 0;
+  cursor: pointer;
+}
+
+.likert-label {
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--text-color, #000000);
+}
+
+.select-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.select-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 15px;
+  border: 2px solid var(--border-color, #e5e7eb);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.select-option:hover {
+  border-color: #4f46e5;
+  background: rgba(79, 70, 229, 0.05);
+}
+
+.select-option.checked {
+  border-color: #4f46e5;
+  background: rgba(79, 70, 229, 0.1);
+}
+
+.select-option input[type="radio"] {
+  margin: 0;
+  cursor: pointer;
+}
+
+.select-label {
+  font-size: 14px;
+  color: var(--text-color, #000000);
+}
+
+.survey-textarea {
+  width: 100%;
+  padding: 12px;
+  border: 2px solid var(--border-color, #e5e7eb);
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  background: var(--input-bg, #ffffff);
+  color: var(--text-color, #000000);
+}
+
+.survey-textarea:focus {
+  outline: none;
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.survey-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 30px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color, #e5e7eb);
+}
+
+.cancel-button {
+  padding: 10px 20px;
+  background: transparent;
+  color: var(--text-color, #000000);
+  border: 2px solid var(--border-color, #e5e7eb);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.cancel-button:hover {
+  background: var(--hover-bg, #f3f4f6);
+  border-color: var(--text-color-secondary, #6b7280);
+}
+
+.submit-button {
+  padding: 10px 24px;
+  background: #4f46e5;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.submit-button:hover {
+  background: #4338ca;
+}
+
+.theme-dark .likert-option,
+.theme-dark .select-option {
+  border-color: #374151;
+}
+
+.theme-dark .likert-option:hover,
+.theme-dark .select-option:hover {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: #6366f1;
+}
+
+.theme-dark .likert-option.checked,
+.theme-dark .select-option.checked {
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.15);
+}
+
+.theme-dark .survey-textarea {
+  background: #1f2937;
+  border-color: #374151;
+  color: #f9fafb;
+}
+
+.theme-dark .survey-textarea:focus {
+  border-color: #6366f1;
+}
+
+.theme-dark .survey-actions {
+  border-top-color: #374151;
+}
+
+.theme-dark .cancel-button {
+  border-color: #374151;
+  color: #f9fafb;
+}
+
+.theme-dark .cancel-button:hover {
+  background: #374151;
+}
+
+.theme-dark .submit-button {
+  background: #6366f1;
+}
+
+.theme-dark .submit-button:hover {
+  background: #4f46e5;
+}
+

@@ -1,0 +1,56 @@
+.admin-annotation-view {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.admin-nav-tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 30px;
+  border-bottom: 2px solid var(--border-color, #e5e7eb);
+  padding-bottom: 10px;
+}
+
+.admin-nav-tabs button {
+  padding: 12px 24px;
+  background: transparent;
+  border: none;
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text-color-secondary, #6b7280);
+  transition: all 0.2s;
+  margin-bottom: -13px;
+}
+
+.admin-nav-tabs button:hover {
+  color: var(--text-color, #000000);
+}
+
+.admin-nav-tabs button.active {
+  color: #4f46e5;
+  border-bottom-color: #4f46e5;
+}
+
+.admin-content {
+  padding: 20px 0;
+}
+
+.theme-dark .admin-nav-tabs {
+  border-bottom-color: #374151;
+}
+
+.theme-dark .admin-nav-tabs button {
+  color: #9ca3af;
+}
+
+.theme-dark .admin-nav-tabs button:hover {
+  color: #f9fafb;
+}
+
+.theme-dark .admin-nav-tabs button.active {
+  color: #6366f1;
+  border-bottom-color: #6366f1;
+}
+
