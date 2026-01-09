@@ -5,7 +5,7 @@ import AdminAnnotationBatchView from './AdminAnnotationBatchView'
 import './AdminAnnotationView.css'
 
 const AdminAnnotationView = ({ user }) => {
-  const [activeView, setActiveView] = useState('dashboard') // 'dashboard', 'upload', 'batch'
+  const [activeView, setActiveView] = useState('dashboard') // 'dashboard', 'upload', 'batch', 'surveys'
   const [selectedBatchId, setSelectedBatchId] = useState(null)
 
   return (

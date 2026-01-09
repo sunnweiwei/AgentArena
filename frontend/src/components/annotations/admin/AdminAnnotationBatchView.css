@@ -247,6 +247,7 @@
   align-items: center;
   gap: 8px;
   font-size: 13px;
+  flex-wrap: wrap;
 }
 
 .annotator-email {
@@ -274,6 +275,33 @@
 .annotator-status.completed {
   background: #d1fae5;
   color: #065f46;
+}
+
+.survey-data-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prolific-id-item,
+.return-link-item {
+  font-size: 13px;
+  padding: 4px 0;
+}
+
+.return-link {
+  color: #4f46e5;
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.return-link:hover {
+  text-decoration: underline;
+}
+
+.no-data {
+  color: var(--text-color-secondary, #6b7280);
+  font-style: italic;
 }
 
 .no-annotators {
@@ -375,5 +403,13 @@
 
 .theme-dark .data-link {
   color: #818cf8;
+}
+
+.theme-dark .return-link {
+  color: #818cf8;
+}
+
+.theme-dark .return-link:hover {
+  color: #6366f1;
 }
 

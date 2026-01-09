@@ -1272,6 +1272,14 @@ async def get_batch_tasks(
         assignment_data = []
         for assignment in assignments:
             assigner = db.query(User).filter(User.id == assignment.user_id).first()
+            # Parse survey data if available
+            survey_data = None
+            if assignment.survey_data:
+                try:
+                    survey_data = json.loads(assignment.survey_data)
+                except:
+                    survey_data = {"raw": assignment.survey_data}
+            
             assignment_data.append({
                 "id": assignment.id,
                 "user_id": assignment.user_id,
@@ -1280,7 +1288,8 @@ async def get_batch_tasks(
                 "claimed_at": assignment.claimed_at.isoformat() if assignment.claimed_at else None,
                 "opened_at": assignment.opened_at.isoformat() if assignment.opened_at else None,
                 "survey_submitted_at": assignment.survey_submitted_at.isoformat() if assignment.survey_submitted_at else None,
-                "completed_at": assignment.completed_at.isoformat() if assignment.completed_at else None
+                "completed_at": assignment.completed_at.isoformat() if assignment.completed_at else None,
+                "survey_data": survey_data
             })
         
         result.append({
@@ -1298,6 +1307,59 @@ async def get_batch_tasks(
         "batch_filename": batch.filename,
         "tasks": result
     }
+
+@app.get("/api/admin/annotations/surveys")
+async def get_all_surveys(
+    user_id: int,
+    batch_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Get all completed surveys (admin only)"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Get all completed assignments with survey data
+    query = db.query(AnnotationAssignment).filter(
+        AnnotationAssignment.status == 'completed',
+        AnnotationAssignment.survey_data.isnot(None)
+    )
+    
+    if batch_id:
+        query = query.join(AnnotationTask).filter(AnnotationTask.batch_id == batch_id)
+    
+    assignments = query.order_by(AnnotationAssignment.completed_at.desc()).all()
+    
+    result = []
+    for assignment in assignments:
+        task = db.query(AnnotationTask).filter(AnnotationTask.id == assignment.task_id).first()
+        assigner = db.query(User).filter(User.id == assignment.user_id).first()
+        
+        # Parse survey data
+        survey_data = None
+        if assignment.survey_data:
+            try:
+                survey_data = json.loads(assignment.survey_data)
+            except:
+                survey_data = {"raw": assignment.survey_data}
+        
+        result.append({
+            "assignment_id": assignment.id,
+            "task_id": task.id if task else None,
+            "instance_id": task.instance_id if task else None,
+            "agent_id": task.agent_id if task else None,
+            "batch_id": task.batch_id if task else None,
+            "user_id": assignment.user_id,
+            "user_email": assigner.email if assigner else "Unknown",
+            "survey_data": survey_data,
+            "completed_at": assignment.completed_at.isoformat() if assignment.completed_at else None,
+            "survey_submitted_at": assignment.survey_submitted_at.isoformat() if assignment.survey_submitted_at else None
+        })
+    
+    return {"surveys": result}
 
 @app.get("/api/admin/annotations/progress")
 async def get_annotation_progress(

@@ -116,6 +116,23 @@
   color: var(--text-color, #000000);
 }
 
+.survey-text-input {
+  width: 100%;
+  padding: 12px;
+  border: 2px solid var(--border-color, #e5e7eb);
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+  background: var(--input-bg, #ffffff);
+  color: var(--text-color, #000000);
+}
+
+.survey-text-input:focus {
+  outline: none;
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
 .survey-textarea {
   width: 100%;
   padding: 12px;
@@ -191,6 +208,16 @@
 .theme-dark .select-option.checked {
   border-color: #6366f1;
   background: rgba(99, 102, 241, 0.15);
+}
+
+.theme-dark .survey-text-input {
+  background: #1f2937;
+  border-color: #374151;
+  color: #f9fafb;
+}
+
+.theme-dark .survey-text-input:focus {
+  border-color: #6366f1;
 }
 
 .theme-dark .survey-textarea {

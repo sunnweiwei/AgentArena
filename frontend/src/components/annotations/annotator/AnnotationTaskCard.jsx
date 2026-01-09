@@ -7,6 +7,30 @@ const AnnotationTaskCard = ({ task, user, onAction }) => {
   const [loading, setLoading] = useState(false)
   const [showSurvey, setShowSurvey] = useState(false)
   const [surveyData, setSurveyData] = useState(null)
+  
+  // Load saved annotation preferences from localStorage
+  const getSavedPreferences = () => {
+    if (typeof window === 'undefined' || !user?.user_id) return {}
+    try {
+      const saved = localStorage.getItem(`annotation_prefs_${user.user_id}`)
+      if (saved) {
+        return JSON.parse(saved)
+      }
+    } catch (e) {
+      console.error('Error loading annotation preferences:', e)
+    }
+    return {}
+  }
+  
+  // Save annotation preferences to localStorage
+  const savePreferences = (prefs) => {
+    if (typeof window === 'undefined' || !user?.user_id) return
+    try {
+      localStorage.setItem(`annotation_prefs_${user.user_id}`, JSON.stringify(prefs))
+    } catch (e) {
+      console.error('Error saving annotation preferences:', e)
+    }
+  }
 
   // Determine task status and available actions
   const status = task.user_status || task.status || 'available'
@@ -51,6 +75,11 @@ const AnnotationTaskCard = ({ task, user, onAction }) => {
   }
 
   const handleShowSurvey = () => {
+    // Load saved preferences to auto-fill
+    const savedPrefs = getSavedPreferences()
+    if (savedPrefs.annotation_name || savedPrefs.prolific_id) {
+      setSurveyData(savedPrefs)
+    }
     setShowSurvey(true)
   }
 
@@ -58,6 +87,15 @@ const AnnotationTaskCard = ({ task, user, onAction }) => {
     if (!assignmentId) {
       alert('Assignment not found')
       return
+    }
+
+    // Save annotation_name and prolific_id to localStorage for auto-fill
+    if (surveyResponses.annotation_name || surveyResponses.prolific_id) {
+      const prefsToSave = {
+        annotation_name: surveyResponses.annotation_name || '',
+        prolific_id: surveyResponses.prolific_id || ''
+      }
+      savePreferences(prefsToSave)
     }
 
     setLoading(true)
@@ -102,26 +140,26 @@ const AnnotationTaskCard = ({ task, user, onAction }) => {
     }
   }
 
-  // Default survey structure (can be customized)
+  // Default survey structure
   const defaultSurvey = {
     questions: [
       {
-        id: "quality",
-        type: "likert",
-        question: "Rate response quality",
-        scale: 5,
-        description: "1 = Poor, 5 = Excellent"
-      },
-      {
-        id: "correctness",
-        type: "select",
-        question: "Was it correct?",
-        options: ["Yes", "No", "Partial"]
-      },
-      {
-        id: "feedback",
+        id: "annotation_name",
         type: "text",
-        question: "Comments:"
+        question: "Annotation Name:",
+        description: "Your name for this annotation"
+      },
+      {
+        id: "prolific_id",
+        type: "text",
+        question: "Prolific ID:",
+        description: "Your Prolific participant ID"
+      },
+      {
+        id: "final_return_link",
+        type: "text",
+        question: "Final Return Link:",
+        description: "The completion link to return to Prolific"
       }
     ]
   }
@@ -217,7 +255,7 @@ const AnnotationTaskCard = ({ task, user, onAction }) => {
             <div className="survey-modal-content">
               <AnnotationSurvey
                 survey={defaultSurvey}
-                initialData={surveyData}
+                initialData={surveyData || getSavedPreferences()}
                 onSubmit={handleSurveySubmit}
                 onCancel={() => setShowSurvey(false)}
               />

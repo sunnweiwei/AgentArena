@@ -166,16 +166,18 @@ const AdminAnnotationBatchView = ({ user, batchId, onBack }) => {
               <th>Assignments</th>
               <th>Status</th>
               <th>Annotators</th>
+              <th>Prolific ID</th>
+              <th>Return Link</th>
             </tr>
           </thead>
           <tbody>
             {filteredTasks.length === 0 ? (
-              <tr>
-                <td colSpan="6" className="empty-state">
-                  {filterInstanceId || filterAgentId ? 'No tasks match filters' : 'No tasks in batch'}
-                </td>
-              </tr>
-            ) : (
+                <tr>
+                  <td colSpan="8" className="empty-state">
+                    {filterInstanceId || filterAgentId ? 'No tasks match filters' : 'No tasks in batch'}
+                  </td>
+                </tr>
+              ) : (
               filteredTasks.map(task => (
                 <tr key={task.id}>
                   <td className="instance-id-cell">{task.instance_id}</td>
@@ -229,6 +231,50 @@ const AdminAnnotationBatchView = ({ user, batchId, onBack }) => {
                         ))
                       ) : (
                         <span className="no-annotators">None</span>
+                      )}
+                    </div>
+                  </td>
+                  <td>
+                    <div className="survey-data-cell">
+                      {task.assignments?.filter(a => a.status === 'completed' && a.survey_data).length > 0 ? (
+                        task.assignments
+                          .filter(a => a.status === 'completed' && a.survey_data)
+                          .map(assignment => (
+                            <div key={assignment.id} className="prolific-id-item">
+                              {assignment.survey_data?.prolific_id || '-'}
+                            </div>
+                          ))
+                      ) : (
+                        <span className="no-data">-</span>
+                      )}
+                    </div>
+                  </td>
+                  <td>
+                    <div className="survey-data-cell">
+                      {task.assignments?.filter(a => a.status === 'completed' && a.survey_data).length > 0 ? (
+                        task.assignments
+                          .filter(a => a.status === 'completed' && a.survey_data)
+                          .map(assignment => (
+                            <div key={assignment.id} className="return-link-item">
+                              {assignment.survey_data?.final_return_link ? (
+                                <a
+                                  href={assignment.survey_data.final_return_link}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="return-link"
+                                  title={assignment.survey_data.final_return_link}
+                                >
+                                  {assignment.survey_data.final_return_link.length > 40
+                                    ? assignment.survey_data.final_return_link.substring(0, 40) + '...'
+                                    : assignment.survey_data.final_return_link}
+                                </a>
+                              ) : (
+                                '-'
+                              )}
+                            </div>
+                          ))
+                      ) : (
+                        <span className="no-data">-</span>
                       )}
                     </div>
                   </td>

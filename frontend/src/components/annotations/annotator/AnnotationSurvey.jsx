@@ -1,8 +1,15 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import './AnnotationSurvey.css'
 
 const AnnotationSurvey = ({ survey, initialData = null, onSubmit, onCancel }) => {
   const [responses, setResponses] = useState(initialData || {})
+  
+  // Auto-fill from initialData when component mounts or initialData changes
+  useEffect(() => {
+    if (initialData) {
+      setResponses(prev => ({ ...initialData, ...prev }))
+    }
+  }, [initialData])
 
   const handleResponseChange = (questionId, value) => {
     setResponses(prev => ({ ...prev, [questionId]: value }))
@@ -89,10 +96,20 @@ const AnnotationSurvey = ({ survey, initialData = null, onSubmit, onCancel }) =>
             )}
             
             {question.type === 'text' && (
+              <input
+                type="text"
+                value={responses[question.id] || ''}
+                onChange={(e) => handleResponseChange(question.id, e.target.value)}
+                placeholder={question.description || "Type your answer here..."}
+                className="survey-text-input"
+              />
+            )}
+            
+            {question.type === 'textarea' && (
               <textarea
                 value={responses[question.id] || ''}
                 onChange={(e) => handleResponseChange(question.id, e.target.value)}
-                placeholder="Type your answer here..."
+                placeholder={question.description || "Type your answer here..."}
                 className="survey-textarea"
                 rows={3}
               />
