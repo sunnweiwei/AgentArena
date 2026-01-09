@@ -17,10 +17,92 @@
   font-size: 24px;
 }
 
+.batch-info-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .batch-info {
   margin: 0;
   color: var(--text-color-secondary, #6b7280);
   font-size: 14px;
+}
+
+.batch-header-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.status-badge {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-badge.status-active {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.status-badge.status-paused {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-badge.status-stopped {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.pause-button,
+.stop-button,
+.resume-button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.pause-button {
+  background: #f59e0b;
+  color: white;
+}
+
+.pause-button:hover {
+  background: #d97706;
+}
+
+.stop-button {
+  background: #dc2626;
+  color: white;
+}
+
+.stop-button:hover {
+  background: #b91c1c;
+}
+
+.resume-button {
+  background: #10b981;
+  color: white;
+}
+
+.resume-button:hover {
+  background: #059669;
+}
+
+.stopped-label {
+  color: #6b7280;
+  font-size: 14px;
+  font-style: italic;
+  padding: 10px 0;
 }
 
 .back-button {
@@ -265,6 +347,30 @@
 
 .theme-dark .back-button:hover {
   background: #4f46e5;
+}
+
+.theme-dark .pause-button {
+  background: #f59e0b;
+}
+
+.theme-dark .pause-button:hover {
+  background: #d97706;
+}
+
+.theme-dark .stop-button {
+  background: #dc2626;
+}
+
+.theme-dark .stop-button:hover {
+  background: #b91c1c;
+}
+
+.theme-dark .resume-button {
+  background: #10b981;
+}
+
+.theme-dark .resume-button:hover {
+  background: #059669;
 }
 
 .theme-dark .data-link {

@@ -31,6 +31,15 @@ const AdminAnnotationDashboard = ({ user, onViewBatch }) => {
     }
   }
 
+  const handleBatchAction = async (batchId, action) => {
+    try {
+      await axios.post(`/api/admin/annotations/batches/${batchId}/${action}?user_id=${user.user_id}`)
+      loadData() // Refresh data
+    } catch (err) {
+      alert(err.response?.data?.detail || err.message || `Failed to ${action} batch`)
+    }
+  }
+
   if (loading) {
     return (
       <div className="admin-dashboard loading">
@@ -82,6 +91,7 @@ const AdminAnnotationDashboard = ({ user, onViewBatch }) => {
             <thead>
               <tr>
                 <th>Filename</th>
+                <th>Status</th>
                 <th>Tasks</th>
                 <th>Completed</th>
                 <th>In Progress</th>
@@ -93,12 +103,17 @@ const AdminAnnotationDashboard = ({ user, onViewBatch }) => {
             <tbody>
               {batches.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="empty-state">No batches uploaded yet</td>
+                  <td colSpan="8" className="empty-state">No batches uploaded yet</td>
                 </tr>
               ) : (
                 batches.map(batch => (
                   <tr key={batch.id}>
                     <td className="filename-cell">{batch.filename}</td>
+                    <td>
+                      <span className={`status-badge status-${batch.status || 'active'}`}>
+                        {batch.status || 'active'}
+                      </span>
+                    </td>
                     <td>{batch.task_count}</td>
                     <td>{batch.completed_assignments}</td>
                     <td>{batch.in_progress_assignments}</td>
@@ -111,12 +126,61 @@ const AdminAnnotationDashboard = ({ user, onViewBatch }) => {
                     </td>
                     <td>{new Date(batch.uploaded_at).toLocaleDateString()}</td>
                     <td>
-                      <button
-                        onClick={() => onViewBatch(batch.id)}
-                        className="view-button"
-                      >
-                        View Details
-                      </button>
+                      <div className="batch-actions">
+                        <button
+                          onClick={() => onViewBatch(batch.id)}
+                          className="view-button"
+                        >
+                          View
+                        </button>
+                        {batch.status === 'active' && (
+                          <>
+                            <button
+                              onClick={() => handleBatchAction(batch.id, 'pause')}
+                              className="pause-button"
+                              title="Pause batch (can be resumed later)"
+                            >
+                              Pause
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (confirm('Stop this batch? This cannot be undone.')) {
+                                  handleBatchAction(batch.id, 'stop')
+                                }
+                              }}
+                              className="stop-button"
+                              title="Stop batch permanently"
+                            >
+                              Stop
+                            </button>
+                          </>
+                        )}
+                        {batch.status === 'paused' && (
+                          <>
+                            <button
+                              onClick={() => handleBatchAction(batch.id, 'resume')}
+                              className="resume-button"
+                              title="Resume batch"
+                            >
+                              Resume
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (confirm('Stop this batch? This cannot be undone.')) {
+                                  handleBatchAction(batch.id, 'stop')
+                                }
+                              }}
+                              className="stop-button"
+                              title="Stop batch permanently"
+                            >
+                              Stop
+                            </button>
+                          </>
+                        )}
+                        {batch.status === 'stopped' && (
+                          <span className="stopped-label">Stopped</span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))

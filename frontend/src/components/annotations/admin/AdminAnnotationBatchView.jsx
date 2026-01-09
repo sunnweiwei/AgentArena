@@ -8,6 +8,7 @@ const AdminAnnotationBatchView = ({ user, batchId, onBack }) => {
   const [error, setError] = useState(null)
   const [filterInstanceId, setFilterInstanceId] = useState('')
   const [filterAgentId, setFilterAgentId] = useState('')
+  const [batchStatus, setBatchStatus] = useState(null)
 
   useEffect(() => {
     loadBatchData()
@@ -16,14 +17,29 @@ const AdminAnnotationBatchView = ({ user, batchId, onBack }) => {
   const loadBatchData = async () => {
     try {
       setError(null)
-      const response = await axios.get(
-        `/api/admin/annotations/batches/${batchId}/tasks?user_id=${user.user_id}`
-      )
-      setBatchData(response.data)
+      const [tasksRes, batchesRes] = await Promise.all([
+        axios.get(`/api/admin/annotations/batches/${batchId}/tasks?user_id=${user.user_id}`),
+        axios.get(`/api/admin/annotations/batches?user_id=${user.user_id}`)
+      ])
+      setBatchData(tasksRes.data)
+      // Find batch status from batches list
+      const batch = batchesRes.data.batches?.find(b => b.id === batchId)
+      if (batch) {
+        setBatchStatus(batch.status || 'active')
+      }
     } catch (err) {
       setError(err.response?.data?.detail || err.message || 'Failed to load batch data')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleBatchAction = async (action) => {
+    try {
+      await axios.post(`/api/admin/annotations/batches/${batchId}/${action}?user_id=${user.user_id}`)
+      loadBatchData() // Refresh data
+    } catch (err) {
+      alert(err.response?.data?.detail || err.message || `Failed to ${action} batch`)
     }
   }
 
@@ -60,11 +76,67 @@ const AdminAnnotationBatchView = ({ user, batchId, onBack }) => {
       <div className="batch-header">
         <div>
           <h2>{batchData?.batch_filename || 'Batch Details'}</h2>
-          <p className="batch-info">
-            {batchData?.tasks?.length || 0} tasks total
-          </p>
+          <div className="batch-info-row">
+            <p className="batch-info">
+              {batchData?.tasks?.length || 0} tasks total
+            </p>
+            {batchStatus && (
+              <span className={`status-badge status-${batchStatus}`}>
+                {batchStatus}
+              </span>
+            )}
+          </div>
         </div>
-        <button onClick={onBack} className="back-button">← Back to Dashboard</button>
+        <div className="batch-header-actions">
+          {batchStatus === 'active' && (
+            <>
+              <button
+                onClick={() => handleBatchAction('pause')}
+                className="pause-button"
+                title="Pause batch (can be resumed later)"
+              >
+                Pause Batch
+              </button>
+              <button
+                onClick={() => {
+                  if (confirm('Stop this batch? This cannot be undone.')) {
+                    handleBatchAction('stop')
+                  }
+                }}
+                className="stop-button"
+                title="Stop batch permanently"
+              >
+                Stop Batch
+              </button>
+            </>
+          )}
+          {batchStatus === 'paused' && (
+            <>
+              <button
+                onClick={() => handleBatchAction('resume')}
+                className="resume-button"
+                title="Resume batch"
+              >
+                Resume Batch
+              </button>
+              <button
+                onClick={() => {
+                  if (confirm('Stop this batch? This cannot be undone.')) {
+                    handleBatchAction('stop')
+                  }
+                }}
+                className="stop-button"
+                title="Stop batch permanently"
+              >
+                Stop Batch
+              </button>
+            </>
+          )}
+          {batchStatus === 'stopped' && (
+            <span className="stopped-label">Batch is stopped</span>
+          )}
+          <button onClick={onBack} className="back-button">← Back to Dashboard</button>
+        </div>
       </div>
 
       <div className="filters">

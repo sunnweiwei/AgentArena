@@ -135,6 +135,7 @@ class AnnotationBatch(Base):
     uploaded_at = Column(DateTime, default=datetime.utcnow)
     task_count = Column(Integer)
     description = Column(Text, nullable=True)
+    status = Column(String, nullable=True, default='active')  # 'active', 'paused', 'stopped'
 
     tasks = relationship("AnnotationTask", back_populates="batch")
     uploader = relationship("User")
@@ -1233,6 +1234,7 @@ async def list_annotation_batches(
             "uploaded_at": batch.uploaded_at.isoformat(),
             "task_count": batch.task_count,
             "description": batch.description,
+            "status": getattr(batch, 'status', None) or 'active',
             "total_assignments": total_assignments,
             "completed_assignments": completed_assignments,
             "in_progress_assignments": in_progress_assignments,
@@ -1427,6 +1429,86 @@ async def delete_annotation_batch(
     
     return {"message": "Batch deleted successfully"}
 
+@app.post("/api/admin/annotations/batches/{batch_id}/pause")
+async def pause_annotation_batch(
+    batch_id: str,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Pause an annotation batch (admin only) - prevents new task claims"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    batch = db.query(AnnotationBatch).filter(AnnotationBatch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    
+    current_status = getattr(batch, 'status', None) or 'active'
+    if current_status == 'stopped':
+        raise HTTPException(status_code=400, detail="Cannot pause a stopped batch")
+    
+    batch.status = 'paused'
+    db.commit()
+    
+    return {"message": "Batch paused successfully", "status": batch.status}
+
+@app.post("/api/admin/annotations/batches/{batch_id}/stop")
+async def stop_annotation_batch(
+    batch_id: str,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Stop an annotation batch (admin only) - permanently prevents new task claims"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    batch = db.query(AnnotationBatch).filter(AnnotationBatch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    
+    batch.status = 'stopped'
+    db.commit()
+    
+    return {"message": "Batch stopped successfully", "status": batch.status}
+
+@app.post("/api/admin/annotations/batches/{batch_id}/resume")
+async def resume_annotation_batch(
+    batch_id: str,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Resume a paused annotation batch (admin only)"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    batch = db.query(AnnotationBatch).filter(AnnotationBatch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    
+    current_status = getattr(batch, 'status', None) or 'active'
+    if current_status == 'stopped':
+        raise HTTPException(status_code=400, detail="Cannot resume a stopped batch")
+    
+    if current_status == 'active':
+        raise HTTPException(status_code=400, detail="Batch is already active")
+    
+    batch.status = 'active'
+    db.commit()
+    
+    return {"message": "Batch resumed successfully", "status": batch.status}
+
 # Annotator Endpoints
 @app.get("/api/annotations/available")
 async def get_available_tasks(
@@ -1435,13 +1517,20 @@ async def get_available_tasks(
     agent_id: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """List available annotation tasks (excludes tasks user already completed)"""
+    """List available annotation tasks (excludes tasks user already completed and tasks from paused/stopped batches)"""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Get all tasks
-    query = db.query(AnnotationTask)
+    # Get all tasks from active batches only
+    # Handle case where status column might not exist yet (use getattr with fallback)
+    try:
+        query = db.query(AnnotationTask).join(AnnotationBatch).filter(
+            AnnotationBatch.status == 'active'
+        )
+    except Exception:
+        # Fallback: if status column doesn't exist, get all tasks (backward compatibility)
+        query = db.query(AnnotationTask)
     
     if instance_id:
         query = query.filter(AnnotationTask.instance_id == instance_id)
