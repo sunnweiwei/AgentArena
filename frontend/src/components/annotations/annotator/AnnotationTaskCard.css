@@ -1,0 +1,254 @@
+.task-card {
+  background: var(--card-bg, #ffffff);
+  border: 2px solid var(--border-color, #e5e7eb);
+  border-radius: 8px;
+  padding: 15px;
+  transition: all 0.2s;
+}
+
+.task-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.task-card.status-available {
+  border-color: #10b981;
+}
+
+.task-card.status-claimed {
+  border-color: #f59e0b;
+}
+
+.task-card.status-in_progress {
+  border-color: #3b82f6;
+}
+
+.task-card.status-completed {
+  border-color: #6b7280;
+  opacity: 0.8;
+}
+
+.task-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 15px;
+}
+
+.task-info {
+  flex: 1;
+}
+
+.task-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 14px;
+}
+
+.task-id .label {
+  font-weight: 600;
+  color: var(--text-color-secondary, #6b7280);
+}
+
+.task-id .value {
+  font-weight: 500;
+  color: var(--text-color, #000000);
+  font-family: 'Courier New', monospace;
+}
+
+.assignment-count {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-color-secondary, #6b7280);
+  font-style: italic;
+}
+
+.status-badge {
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.status-badge.available {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.status-badge.claimed {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-badge.in_progress {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.status-badge.completed {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.task-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.action-button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.claim-button {
+  background: #10b981;
+  color: white;
+}
+
+.claim-button:hover:not(:disabled) {
+  background: #059669;
+}
+
+.open-button {
+  background: #3b82f6;
+  color: white;
+}
+
+.open-button:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+.survey-button {
+  background: #8b5cf6;
+  color: white;
+}
+
+.survey-button:hover:not(:disabled) {
+  background: #7c3aed;
+}
+
+.complete-button {
+  background: #10b981;
+  color: white;
+}
+
+.complete-button:hover:not(:disabled) {
+  background: #059669;
+}
+
+.action-button:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+.completed-indicator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  background: #d1fae5;
+  color: #065f46;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.completed-date {
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.8;
+}
+
+.survey-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.survey-modal {
+  background: var(--card-bg, #ffffff);
+  border-radius: 8px;
+  max-width: 600px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+}
+
+.survey-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px;
+  border-bottom: 1px solid var(--border-color, #e5e7eb);
+}
+
+.survey-modal-header h3 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  font-size: 28px;
+  cursor: pointer;
+  color: var(--text-color-secondary, #6b7280);
+  line-height: 1;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+.close-button:hover {
+  background: var(--hover-bg, #f3f4f6);
+  color: var(--text-color, #000000);
+}
+
+.survey-modal-content {
+  padding: 20px;
+}
+
+.theme-dark .task-card {
+  background: #1f2937;
+  border-color: #374151;
+}
+
+.theme-dark .task-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.theme-dark .survey-modal {
+  background: #1f2937;
+}
+
+.theme-dark .survey-modal-header {
+  border-bottom-color: #374151;
+}
+
+.theme-dark .close-button:hover {
+  background: #374151;
+  color: #f9fafb;
+}
+

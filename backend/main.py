@@ -125,6 +125,51 @@ class SurveyResponse(Base):
     chat = relationship("Chat", backref="survey_responses")
     user = relationship("User")
 
+# Annotation System Models
+class AnnotationBatch(Base):
+    __tablename__ = "annotation_batches"
+
+    id = Column(String, primary_key=True)  # UUID
+    filename = Column(String)
+    uploaded_by = Column(Integer, ForeignKey("users.id"))
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+    task_count = Column(Integer)
+    description = Column(Text, nullable=True)
+    status = Column(String, nullable=True, default='active')  # 'active', 'paused', 'stopped'
+
+    tasks = relationship("AnnotationTask", back_populates="batch")
+    uploader = relationship("User")
+
+class AnnotationTask(Base):
+    __tablename__ = "annotation_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    instance_id = Column(String, index=True)  # Can be duplicated
+    agent_id = Column(String, index=True)      # Can be duplicated
+    data_link = Column(Text)                   # URL to open
+    batch_id = Column(String, ForeignKey("annotation_batches.id"), index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(Integer, ForeignKey("users.id"))
+
+    batch = relationship("AnnotationBatch", back_populates="tasks")
+    assignments = relationship("AnnotationAssignment", back_populates="task")
+
+class AnnotationAssignment(Base):
+    __tablename__ = "annotation_assignments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("annotation_tasks.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    status = Column(String)  # 'claimed', 'in_progress', 'completed'
+    claimed_at = Column(DateTime, default=datetime.utcnow)
+    opened_at = Column(DateTime, nullable=True)
+    survey_submitted_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    survey_data = Column(Text, nullable=True)  # JSON survey responses
+
+    task = relationship("AnnotationTask", back_populates="assignments")
+    user = relationship("User")
+
 # Create tables
 Base.metadata.create_all(bind=engine)
 
@@ -627,11 +672,28 @@ async def get_shared_chat(share_token: str, db: Session = Depends(get_db)):
     }
 
 # Admin Endpoints
-ADMIN_USER_ID = "IJIgxK"  # Special admin user ID
+ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")
+ADMIN_EMAILS = [email.strip() for email in os.getenv("ADMIN_EMAILS", "").split(",") if email.strip()]
 
 def is_admin(user_id: str) -> bool:
-    """Check if user is admin"""
+    """Check if user is admin by user_id (legacy)"""
     return user_id == ADMIN_USER_ID
+
+def is_admin_by_email(email: str) -> bool:
+    """Check if user is admin by email"""
+    if not email:
+        return False
+    return email.strip() in ADMIN_EMAILS
+
+def is_admin_user(user: User) -> bool:
+    """Check if user is admin (checks both email and legacy user_id)"""
+    if not user:
+        return False
+    if ADMIN_USER_ID and str(user.id) == ADMIN_USER_ID:
+        return True
+    if user.email and is_admin_by_email(user.email):
+        return True
+    return False
 
 @app.get("/api/admin/all-chats")
 async def get_all_chats_grouped(user_id: str, db: Session = Depends(get_db)):
@@ -1008,6 +1070,775 @@ async def get_survey(chat_id: str, user_id: int, db: Session = Depends(get_db)):
             "specific_examples": survey.specific_examples,
             "created_at": survey.created_at.isoformat()
         }
+    }
+
+# ==================== Annotation System Endpoints ====================
+
+# Admin Annotation Endpoints
+@app.post("/api/admin/annotations/upload")
+async def upload_annotation_csv(
+    file: UploadFile = File(...),
+    user_id: int = None,
+    db: Session = Depends(get_db)
+):
+    """Upload CSV file with annotation tasks (admin only)"""
+    import pandas as pd
+    from urllib.parse import urlparse
+    
+    # Get user and check admin status
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Validate file type
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+    
+    try:
+        # Read CSV
+        contents = await file.read()
+        df = pd.read_csv(pd.io.common.BytesIO(contents))
+        
+        # Validate columns
+        required_columns = ['instance_id', 'agent_id', 'data_link']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Missing required columns: {', '.join(missing_columns)}"
+            )
+        
+        # Validate data
+        if len(df) == 0:
+            raise HTTPException(status_code=400, detail="CSV file is empty")
+        
+        if len(df) > 10000:
+            raise HTTPException(status_code=400, detail="CSV file exceeds 10,000 rows limit")
+        
+        # Validate each row
+        invalid_rows = []
+        for idx, row in df.iterrows():
+            if pd.isna(row['instance_id']) or str(row['instance_id']).strip() == '':
+                invalid_rows.append(f"Row {idx + 2}: instance_id is empty")
+            if pd.isna(row['agent_id']) or str(row['agent_id']).strip() == '':
+                invalid_rows.append(f"Row {idx + 2}: agent_id is empty")
+            if pd.isna(row['data_link']) or str(row['data_link']).strip() == '':
+                invalid_rows.append(f"Row {idx + 2}: data_link is empty")
+            else:
+                # Validate URL
+                try:
+                    parsed = urlparse(str(row['data_link']).strip())
+                    if not parsed.scheme or not parsed.netloc:
+                        invalid_rows.append(f"Row {idx + 2}: data_link is not a valid URL")
+                except:
+                    invalid_rows.append(f"Row {idx + 2}: data_link is not a valid URL")
+        
+        if invalid_rows:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Validation errors:\n" + "\n".join(invalid_rows[:10])
+            )
+        
+        # Create batch
+        batch_id = str(uuid.uuid4())
+        batch = AnnotationBatch(
+            id=batch_id,
+            filename=file.filename,
+            uploaded_by=user_id,
+            task_count=len(df),
+            description=None
+        )
+        db.add(batch)
+        db.flush()
+        
+        # Create tasks
+        tasks = []
+        for _, row in df.iterrows():
+            task = AnnotationTask(
+                instance_id=str(row['instance_id']).strip(),
+                agent_id=str(row['agent_id']).strip(),
+                data_link=str(row['data_link']).strip(),
+                batch_id=batch_id,
+                created_by=user_id
+            )
+            db.add(task)
+            tasks.append(task)
+        
+        db.commit()
+        db.refresh(batch)
+        
+        return {
+            "batch_id": batch_id,
+            "task_count": len(tasks),
+            "filename": file.filename,
+            "uploaded_at": batch.uploaded_at.isoformat(),
+            "preview": [
+                {
+                    "instance_id": t.instance_id,
+                    "agent_id": t.agent_id,
+                    "data_link": t.data_link
+                }
+                for t in tasks[:5]
+            ]
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error processing CSV: {str(e)}")
+
+@app.get("/api/admin/annotations/batches")
+async def list_annotation_batches(
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """List all annotation batches (admin only)"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    batches = db.query(AnnotationBatch).order_by(AnnotationBatch.uploaded_at.desc()).all()
+    
+    result = []
+    for batch in batches:
+        # Count assignments by status
+        total_assignments = db.query(AnnotationAssignment).join(AnnotationTask).filter(
+            AnnotationTask.batch_id == batch.id
+        ).count()
+        
+        completed_assignments = db.query(AnnotationAssignment).join(AnnotationTask).filter(
+            AnnotationTask.batch_id == batch.id,
+            AnnotationAssignment.status == 'completed'
+        ).count()
+        
+        in_progress_assignments = db.query(AnnotationAssignment).join(AnnotationTask).filter(
+            AnnotationTask.batch_id == batch.id,
+            AnnotationAssignment.status == 'in_progress'
+        ).count()
+        
+        result.append({
+            "id": batch.id,
+            "filename": batch.filename,
+            "uploaded_by": batch.uploaded_by,
+            "uploaded_at": batch.uploaded_at.isoformat(),
+            "task_count": batch.task_count,
+            "description": batch.description,
+            "status": getattr(batch, 'status', None) or 'active',
+            "total_assignments": total_assignments,
+            "completed_assignments": completed_assignments,
+            "in_progress_assignments": in_progress_assignments,
+            "completion_rate": round((completed_assignments / batch.task_count * 100) if batch.task_count > 0 else 0, 1)
+        })
+    
+    return {"batches": result}
+
+@app.get("/api/admin/annotations/batches/{batch_id}/tasks")
+async def get_batch_tasks(
+    batch_id: str,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get all tasks in a batch with assignment status (admin only)"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    batch = db.query(AnnotationBatch).filter(AnnotationBatch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    
+    tasks = db.query(AnnotationTask).filter(AnnotationTask.batch_id == batch_id).all()
+    
+    result = []
+    for task in tasks:
+        assignments = db.query(AnnotationAssignment).filter(
+            AnnotationAssignment.task_id == task.id
+        ).all()
+        
+        assignment_data = []
+        for assignment in assignments:
+            assigner = db.query(User).filter(User.id == assignment.user_id).first()
+            # Parse survey data if available
+            survey_data = None
+            if assignment.survey_data:
+                try:
+                    survey_data = json.loads(assignment.survey_data)
+                except:
+                    survey_data = {"raw": assignment.survey_data}
+            
+            assignment_data.append({
+                "id": assignment.id,
+                "user_id": assignment.user_id,
+                "user_email": assigner.email if assigner else "Unknown",
+                "status": assignment.status,
+                "claimed_at": assignment.claimed_at.isoformat() if assignment.claimed_at else None,
+                "opened_at": assignment.opened_at.isoformat() if assignment.opened_at else None,
+                "survey_submitted_at": assignment.survey_submitted_at.isoformat() if assignment.survey_submitted_at else None,
+                "completed_at": assignment.completed_at.isoformat() if assignment.completed_at else None,
+                "survey_data": survey_data
+            })
+        
+        result.append({
+            "id": task.id,
+            "instance_id": task.instance_id,
+            "agent_id": task.agent_id,
+            "data_link": task.data_link,
+            "created_at": task.created_at.isoformat(),
+            "assignments": assignment_data,
+            "assignment_count": len(assignments)
+        })
+    
+    return {
+        "batch_id": batch_id,
+        "batch_filename": batch.filename,
+        "tasks": result
+    }
+
+@app.get("/api/admin/annotations/surveys")
+async def get_all_surveys(
+    user_id: int,
+    batch_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Get all completed surveys (admin only)"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Get all completed assignments with survey data
+    query = db.query(AnnotationAssignment).filter(
+        AnnotationAssignment.status == 'completed',
+        AnnotationAssignment.survey_data.isnot(None)
+    )
+    
+    if batch_id:
+        query = query.join(AnnotationTask).filter(AnnotationTask.batch_id == batch_id)
+    
+    assignments = query.order_by(AnnotationAssignment.completed_at.desc()).all()
+    
+    result = []
+    for assignment in assignments:
+        task = db.query(AnnotationTask).filter(AnnotationTask.id == assignment.task_id).first()
+        assigner = db.query(User).filter(User.id == assignment.user_id).first()
+        
+        # Parse survey data
+        survey_data = None
+        if assignment.survey_data:
+            try:
+                survey_data = json.loads(assignment.survey_data)
+            except:
+                survey_data = {"raw": assignment.survey_data}
+        
+        result.append({
+            "assignment_id": assignment.id,
+            "task_id": task.id if task else None,
+            "instance_id": task.instance_id if task else None,
+            "agent_id": task.agent_id if task else None,
+            "batch_id": task.batch_id if task else None,
+            "user_id": assignment.user_id,
+            "user_email": assigner.email if assigner else "Unknown",
+            "survey_data": survey_data,
+            "completed_at": assignment.completed_at.isoformat() if assignment.completed_at else None,
+            "survey_submitted_at": assignment.survey_submitted_at.isoformat() if assignment.survey_submitted_at else None
+        })
+    
+    return {"surveys": result}
+
+@app.get("/api/admin/annotations/progress")
+async def get_annotation_progress(
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get annotation progress dashboard metrics (admin only)"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Total tasks
+    total_tasks = db.query(AnnotationTask).count()
+    
+    # Completed tasks (tasks with at least one completed assignment)
+    completed_tasks = db.query(AnnotationTask).join(AnnotationAssignment).filter(
+        AnnotationAssignment.status == 'completed'
+    ).distinct().count()
+    
+    # In-progress tasks
+    in_progress_tasks = db.query(AnnotationTask).join(AnnotationAssignment).filter(
+        AnnotationAssignment.status == 'in_progress'
+    ).distinct().count()
+    
+    # Per-annotator statistics
+    annotator_stats = []
+    users_with_assignments = db.query(User).join(AnnotationAssignment).distinct().all()
+    
+    for user in users_with_assignments:
+        assignments = db.query(AnnotationAssignment).filter(
+            AnnotationAssignment.user_id == user.id
+        ).all()
+        
+        completed = [a for a in assignments if a.status == 'completed']
+        in_progress = [a for a in assignments if a.status == 'in_progress']
+        
+        # Calculate average completion time
+        avg_time = None
+        if completed:
+            times = []
+            for a in completed:
+                if a.completed_at and a.claimed_at:
+                    delta = (a.completed_at - a.claimed_at).total_seconds() / 3600  # hours
+                    times.append(delta)
+            if times:
+                avg_time = round(sum(times) / len(times), 2)
+        
+        annotator_stats.append({
+            "user_id": user.id,
+            "user_email": user.email,
+            "total_claimed": len(assignments),
+            "completed_count": len(completed),
+            "in_progress_count": len(in_progress),
+            "avg_completion_time_hours": avg_time
+        })
+    
+    # Completion rate by batch
+    batch_stats = []
+    batches = db.query(AnnotationBatch).all()
+    for batch in batches:
+        total = batch.task_count
+        completed = db.query(AnnotationAssignment).join(AnnotationTask).filter(
+            AnnotationTask.batch_id == batch.id,
+            AnnotationAssignment.status == 'completed'
+        ).count()
+        
+        batch_stats.append({
+            "batch_id": batch.id,
+            "filename": batch.filename,
+            "total_tasks": total,
+            "completed_tasks": completed,
+            "completion_rate": round((completed / total * 100) if total > 0 else 0, 1)
+        })
+    
+    return {
+        "summary": {
+            "total_tasks": total_tasks,
+            "completed_tasks": completed_tasks,
+            "in_progress_tasks": in_progress_tasks,
+            "completion_rate": round((completed_tasks / total_tasks * 100) if total_tasks > 0 else 0, 1)
+        },
+        "annotator_stats": annotator_stats,
+        "batch_stats": batch_stats
+    }
+
+@app.delete("/api/admin/annotations/batches/{batch_id}")
+async def delete_annotation_batch(
+    batch_id: str,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete an annotation batch (admin only, only if no completed assignments)"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    batch = db.query(AnnotationBatch).filter(AnnotationBatch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    
+    # Check for completed assignments
+    completed_count = db.query(AnnotationAssignment).join(AnnotationTask).filter(
+        AnnotationTask.batch_id == batch_id,
+        AnnotationAssignment.status == 'completed'
+    ).count()
+    
+    if completed_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete batch with {completed_count} completed assignments"
+        )
+    
+    # Delete tasks and assignments
+    tasks = db.query(AnnotationTask).filter(AnnotationTask.batch_id == batch_id).all()
+    for task in tasks:
+        assignments = db.query(AnnotationAssignment).filter(AnnotationAssignment.task_id == task.id).all()
+        for assignment in assignments:
+            db.delete(assignment)
+        db.delete(task)
+    
+    db.delete(batch)
+    db.commit()
+    
+    return {"message": "Batch deleted successfully"}
+
+@app.post("/api/admin/annotations/batches/{batch_id}/pause")
+async def pause_annotation_batch(
+    batch_id: str,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Pause an annotation batch (admin only) - prevents new task claims"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    batch = db.query(AnnotationBatch).filter(AnnotationBatch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    
+    current_status = getattr(batch, 'status', None) or 'active'
+    if current_status == 'stopped':
+        raise HTTPException(status_code=400, detail="Cannot pause a stopped batch")
+    
+    batch.status = 'paused'
+    db.commit()
+    
+    return {"message": "Batch paused successfully", "status": batch.status}
+
+@app.post("/api/admin/annotations/batches/{batch_id}/stop")
+async def stop_annotation_batch(
+    batch_id: str,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Stop an annotation batch (admin only) - permanently prevents new task claims"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    batch = db.query(AnnotationBatch).filter(AnnotationBatch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    
+    batch.status = 'stopped'
+    db.commit()
+    
+    return {"message": "Batch stopped successfully", "status": batch.status}
+
+@app.post("/api/admin/annotations/batches/{batch_id}/resume")
+async def resume_annotation_batch(
+    batch_id: str,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Resume a paused annotation batch (admin only)"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    batch = db.query(AnnotationBatch).filter(AnnotationBatch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    
+    current_status = getattr(batch, 'status', None) or 'active'
+    if current_status == 'stopped':
+        raise HTTPException(status_code=400, detail="Cannot resume a stopped batch")
+    
+    if current_status == 'active':
+        raise HTTPException(status_code=400, detail="Batch is already active")
+    
+    batch.status = 'active'
+    db.commit()
+    
+    return {"message": "Batch resumed successfully", "status": batch.status}
+
+# Annotator Endpoints
+@app.get("/api/annotations/available")
+async def get_available_tasks(
+    user_id: int,
+    instance_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """List available annotation tasks (excludes tasks user already completed and tasks from paused/stopped batches)"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get all tasks from active batches only
+    # Handle case where status column might not exist yet (use getattr with fallback)
+    try:
+        query = db.query(AnnotationTask).join(AnnotationBatch).filter(
+            AnnotationBatch.status == 'active'
+        )
+    except Exception:
+        # Fallback: if status column doesn't exist, get all tasks (backward compatibility)
+        query = db.query(AnnotationTask)
+    
+    if instance_id:
+        query = query.filter(AnnotationTask.instance_id == instance_id)
+    if agent_id:
+        query = query.filter(AnnotationTask.agent_id == agent_id)
+    
+    all_tasks = query.all()
+    
+    # Filter out tasks user already completed
+    completed_task_ids = db.query(AnnotationAssignment.task_id).filter(
+        AnnotationAssignment.user_id == user_id,
+        AnnotationAssignment.status == 'completed'
+    ).distinct().all()
+    completed_task_ids = {t[0] for t in completed_task_ids}
+    
+    result = []
+    for task in all_tasks:
+        if task.id in completed_task_ids:
+            continue  # Skip tasks user already completed
+        
+        # Get assignment status for this user
+        user_assignment = db.query(AnnotationAssignment).filter(
+            AnnotationAssignment.task_id == task.id,
+            AnnotationAssignment.user_id == user_id
+        ).first()
+        
+        # Count total assignments for this task
+        total_assignments = db.query(AnnotationAssignment).filter(
+            AnnotationAssignment.task_id == task.id
+        ).count()
+        
+        result.append({
+            "id": task.id,
+            "instance_id": task.instance_id,
+            "agent_id": task.agent_id,
+            "data_link": task.data_link,
+            "batch_id": task.batch_id,
+            "created_at": task.created_at.isoformat(),
+            "user_status": user_assignment.status if user_assignment else "available",
+            "user_assignment_id": user_assignment.id if user_assignment else None,
+            "total_assignments": total_assignments
+        })
+    
+    return {"tasks": result}
+
+@app.post("/api/annotations/{task_id}/claim")
+async def claim_task(
+    task_id: int,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Claim an annotation task"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    task = db.query(AnnotationTask).filter(AnnotationTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Check if user already has an assignment for this task
+    existing = db.query(AnnotationAssignment).filter(
+        AnnotationAssignment.task_id == task_id,
+        AnnotationAssignment.user_id == user_id
+    ).first()
+    
+    if existing:
+        return {
+            "assignment_id": existing.id,
+            "status": existing.status,
+            "message": "Task already claimed"
+        }
+    
+    # Create new assignment
+    assignment = AnnotationAssignment(
+        task_id=task_id,
+        user_id=user_id,
+        status='claimed'
+    )
+    db.add(assignment)
+    db.commit()
+    db.refresh(assignment)
+    
+    return {
+        "assignment_id": assignment.id,
+        "status": assignment.status,
+        "message": "Task claimed successfully"
+    }
+
+@app.post("/api/annotations/assignments/{assignment_id}/open")
+async def mark_task_opened(
+    assignment_id: int,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Mark task link as opened"""
+    assignment = db.query(AnnotationAssignment).filter(
+        AnnotationAssignment.id == assignment_id,
+        AnnotationAssignment.user_id == user_id
+    ).first()
+    
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    assignment.status = 'in_progress'
+    assignment.opened_at = datetime.utcnow()
+    db.commit()
+    
+    return {"message": "Task marked as opened", "status": assignment.status}
+
+class AnnotationSurveySubmission(BaseModel):
+    survey_data: dict
+
+@app.post("/api/annotations/assignments/{assignment_id}/survey")
+async def submit_annotation_survey(
+    assignment_id: int,
+    submission: AnnotationSurveySubmission,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Submit survey for an annotation assignment"""
+    assignment = db.query(AnnotationAssignment).filter(
+        AnnotationAssignment.id == assignment_id,
+        AnnotationAssignment.user_id == user_id
+    ).first()
+    
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    assignment.survey_data = json.dumps(submission.survey_data)
+    assignment.survey_submitted_at = datetime.utcnow()
+    db.commit()
+    
+    return {"message": "Survey submitted successfully"}
+
+@app.post("/api/annotations/assignments/{assignment_id}/complete")
+async def complete_assignment(
+    assignment_id: int,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Mark annotation assignment as complete (requires survey)"""
+    assignment = db.query(AnnotationAssignment).filter(
+        AnnotationAssignment.id == assignment_id,
+        AnnotationAssignment.user_id == user_id
+    ).first()
+    
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    if not assignment.survey_data:
+        raise HTTPException(
+            status_code=400,
+            detail="Survey must be submitted before marking task as complete"
+        )
+    
+    assignment.status = 'completed'
+    assignment.completed_at = datetime.utcnow()
+    db.commit()
+    
+    return {"message": "Assignment marked as complete", "status": assignment.status}
+
+@app.get("/api/annotations/my-tasks")
+async def get_my_tasks(
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get current user's claimed tasks grouped by status"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    assignments = db.query(AnnotationAssignment).filter(
+        AnnotationAssignment.user_id == user_id
+    ).order_by(AnnotationAssignment.claimed_at.desc()).all()
+    
+    result = {
+        "claimed": [],
+        "in_progress": [],
+        "completed": []
+    }
+    
+    for assignment in assignments:
+        task = db.query(AnnotationTask).filter(AnnotationTask.id == assignment.task_id).first()
+        if not task:
+            continue
+        
+        task_data = {
+            "assignment_id": assignment.id,
+            "task_id": task.id,
+            "instance_id": task.instance_id,
+            "agent_id": task.agent_id,
+            "data_link": task.data_link,
+            "status": assignment.status,
+            "claimed_at": assignment.claimed_at.isoformat(),
+            "opened_at": assignment.opened_at.isoformat() if assignment.opened_at else None,
+            "survey_submitted_at": assignment.survey_submitted_at.isoformat() if assignment.survey_submitted_at else None,
+            "completed_at": assignment.completed_at.isoformat() if assignment.completed_at else None,
+            "has_survey": bool(assignment.survey_data)
+        }
+        
+        if assignment.status == 'completed':
+            result["completed"].append(task_data)
+        elif assignment.status == 'in_progress':
+            result["in_progress"].append(task_data)
+        else:
+            result["claimed"].append(task_data)
+    
+    return result
+
+@app.get("/api/annotations/my-stats")
+async def get_my_stats(
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get current user's annotation statistics"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    assignments = db.query(AnnotationAssignment).filter(
+        AnnotationAssignment.user_id == user_id
+    ).all()
+    
+    completed = [a for a in assignments if a.status == 'completed']
+    in_progress = [a for a in assignments if a.status == 'in_progress']
+    claimed = [a for a in assignments if a.status == 'claimed']
+    
+    # Calculate average completion time
+    avg_time = None
+    if completed:
+        times = []
+        for a in completed:
+            if a.completed_at and a.claimed_at:
+                delta = (a.completed_at - a.claimed_at).total_seconds() / 3600  # hours
+                times.append(delta)
+        if times:
+            avg_time = round(sum(times) / len(times), 2)
+    
+    return {
+        "total_claimed": len(assignments),
+        "completed_count": len(completed),
+        "in_progress_count": len(in_progress),
+        "claimed_count": len(claimed),
+        "completion_rate": round((len(completed) / len(assignments) * 100) if len(assignments) > 0 else 0, 1),
+        "avg_completion_time_hours": avg_time
     }
 
 class InlineSurveySubmission(BaseModel):

@@ -70,6 +70,20 @@ const Sidebar = ({
               <span>□</span> Dashboard
             </button>
           )}
+          <a
+            href="/annotations"
+            className="new-chat-button annotations-button"
+            onClick={(e) => {
+              if (isLocked) {
+                e.preventDefault()
+                return
+              }
+              // Let browser handle navigation
+            }}
+            title="Annotation System"
+          >
+            <span>📝</span> Annotations
+          </a>
         </div>
 
         {/* Main content area - chat list or settings panel */}
