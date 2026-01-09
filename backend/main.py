@@ -696,9 +696,13 @@ def is_admin_user(user: User) -> bool:
     return False
 
 @app.get("/api/admin/all-chats")
-async def get_all_chats_grouped(user_id: str, db: Session = Depends(get_db)):
+async def get_all_chats_grouped(user_id: int, db: Session = Depends(get_db)):
     """Get all chats grouped by user (admin only)"""
-    if not is_admin(user_id):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
         raise HTTPException(status_code=403, detail="Admin access required")
     
     # Get all users who have chats
@@ -745,9 +749,13 @@ async def get_all_chats_grouped(user_id: str, db: Session = Depends(get_db)):
     return {"users": result}
 
 @app.get("/api/admin/stats")
-async def get_admin_stats(user_id: str, db: Session = Depends(get_db)):
+async def get_admin_stats(user_id: int, db: Session = Depends(get_db)):
     """Get statistics for admin dashboard"""
-    if not is_admin(user_id):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not is_admin_user(user):
         raise HTTPException(status_code=403, detail="Admin access required")
     
     from datetime import datetime, timedelta

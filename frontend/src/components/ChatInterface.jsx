@@ -298,17 +298,20 @@ const ChatInterface = ({ user, onLogout, onLogin }) => {
     try {
       // Load all chats grouped by user
       const chatsResponse = await axios.get('/api/admin/all-chats', {
-        params: { user_id: user.email }
+        params: { user_id: user.user_id }
       })
       setAdminUsers(chatsResponse.data.users || [])
       
       // Load statistics
       const statsResponse = await axios.get('/api/admin/stats', {
-        params: { user_id: user.email }
+        params: { user_id: user.user_id }
       })
       setAdminStats(statsResponse.data)
     } catch (err) {
-      console.error('Failed to load admin data:', err)
+      // Only log error if not a 403 (which is expected for non-admin users)
+      if (err.response?.status !== 403) {
+        console.error('Failed to load admin data:', err)
+      }
     } finally {
       setLoading(false)
     }
